@@ -71,7 +71,7 @@ func (g *Generator) Execute(eventCount int, eventMemoryCount int, memoryCount in
 func (g *Generator) buildEvent(memCount int) *hippo.Event {
 	// Basic event
 	e := &hippo.Event{
-		Significance: int32(rand.Intn(32768)),
+		Significance: randomSignificance(),
 		TimeStart:    randomPastTimeNano(),
 		Name:         g.buildPhrase(32 + rand.Intn(224)),
 		Description:  g.buildPhrase(64 + rand.Intn(960)),
@@ -93,7 +93,7 @@ func (g *Generator) buildEvent(memCount int) *hippo.Event {
 
 func (g *Generator) buildMemory(lastTimeStamp int64) *hippo.Memory {
 	m := &hippo.Memory{
-		Significance: int32(rand.Intn(32768)),
+		Significance: randomSignificance(),
 		TimeStamp:    lastTimeStamp + rand.Int63n(3600*1000000000),
 		Body:         g.buildPhrase(g.memoryLength),
 	}
@@ -122,4 +122,8 @@ func (g *Generator) buildPhrase(length int) string {
 
 func randomPastTimeNano() int64 {
 	return time.Now().AddDate(-1*(rand.Intn(5)+1), rand.Intn(12), rand.Intn(31)).UnixNano()
+}
+
+func randomSignificance() int32 {
+	return int32(rand.Intn(32767)) + 1
 }

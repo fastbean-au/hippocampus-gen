@@ -62,10 +62,13 @@ func main() {
 	eventMemories := int(float64(memoryCount * memoriesWithoutEventsCount / 100))
 	memoriesWithoutEvents := memoryCount - eventMemories
 
-	// Calculate each worker's set
+	// Calculate base worker's set
 	epw := eventCount / workerCount
+	epwR := eventCount % workerCount
 	mpe := eventMemories / workerCount
+	mpeR := eventMemories % workerCount
 	mpw := memoriesWithoutEvents / workerCount
+	mpwR := memoriesWithoutEvents % workerCount
 
 	// Start the workers
 	var wg sync.WaitGroup
@@ -73,10 +76,21 @@ func main() {
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 
-		go func() {
+		go func(i, epw, mpe, mpw int) {
+			// Override work allocation
+			if i < epwR {
+				epw++
+			}
+			if i < mpeR {
+				mpe++
+			}
+			if i < mpwR {
+				mpw++
+			}
+
 			g := generator.New(dict, dictByLen, MaxWordLength, memoryLength, client)
 			g.Execute(epw, mpe, mpw, &wg)
-		}()
+		}(i, epw, mpe, mpw)
 	}
 
 	wg.Wait()
