@@ -1,9 +1,10 @@
 package main
 
 import (
-	"bufio"
+	_ "embed"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/spf13/pflag"
@@ -11,7 +12,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	"github.com/fastbean-au/hippocampus-gen/generator"
+	"github.com/fastbean-au/hippocampus-gen/cmd/random/generator"
 	hippo "github.com/fastbean-au/hippocampus/proto"
 )
 
@@ -19,6 +20,11 @@ const MaxWordLength = 16
 
 var dict []string
 var dictByLen map[int][]string
+
+var (
+	//go:embed wordlist.10000.txt
+	data []byte
+)
 
 func main() {
 	pflag.IntP("events", "e", 100, "number of events to create")
@@ -97,20 +103,7 @@ func main() {
 }
 
 func importDictionary() error {
-	// Read the dictionary file
-	readFile, err := os.Open("./data/wordlist.10000.txt")
-
-	if err != nil {
-		fmt.Printf("Error reading dictionary: %s\n", err.Error())
-		return err
-	}
-
-	fileScanner := bufio.NewScanner(readFile)
-	fileScanner.Split(bufio.ScanLines)
-
-	// Parse the file contents into our dictionaries
-	for fileScanner.Scan() {
-		word := fileScanner.Text()
+	for _, word := range strings.Split(string(data), "\n") {
 		l := len(word)
 		if l > MaxWordLength {
 			continue
@@ -118,9 +111,8 @@ func importDictionary() error {
 
 		dict = append(dict, word)
 		dictByLen[l] = append(dictByLen[l], word)
-	}
 
-	readFile.Close()
+	}
 
 	return nil
 }
