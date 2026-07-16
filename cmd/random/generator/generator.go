@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	hippo "github.com/fastbean-au/hippocampus/proto"
+	hippo "github.com/fastbean-au/hippocampus/contract"
 )
 
 type Generator struct {
