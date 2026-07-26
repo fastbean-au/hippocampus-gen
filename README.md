@@ -94,3 +94,19 @@ A log-shaped generator: each synthetic log line becomes a memory whose significa
 # 3,000 lines across 5 services over 20 days of history
 go run cmd/logs/main.go -n 3000 -d 20
 ```
+
+### Live trickle (the continuous-logs showcase)
+
+By default the generator loads a fixed, back-dated batch and exits. `--live` instead trickles new lines at the current time, indefinitely — the counterpart to the book's daily reset, and the shape a hosted logs showcase wants: a steady stream where the service's own sleep cycle and capacity eviction reap the low-significance noise as the store fills, so it never grows without bound.
+
+- `--live` — emit continuously at the current time instead of a one-shot back-dated batch.
+- `--rate <n>` — approximate lines per minute (default `60`).
+- `--duration <dur>` — stop after this long (default `0` = run until Ctrl-C / SIGTERM; either stops it promptly).
+
+```bash
+# A steady ~120 lines/min stream; leave it running and watch the sleep cycle forget the noise.
+go run cmd/logs/main.go -s localhost:50051 --live --rate 120 \
+  --token "$(hippocampus --mint-token --role writer -c config.json)"
+```
+
+The one-shot `-n`/`-d` flags are ignored under `--live`. There is no `--reset` here (unlike the book) — the point is a long-lived, ever-forgetting store, not a clean reload.

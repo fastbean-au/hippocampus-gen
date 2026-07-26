@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/fastbean-au/hippocampus-gen/internal/client"
 	"github.com/fastbean-au/hippocampus-gen/internal/oidc"
+	"github.com/fastbean-au/hippocampus-gen/internal/pace"
 )
 
 // level is one log severity, its relative frequency, and the base memory significance a line at
@@ -60,8 +63,11 @@ var tokens = []string{"u4821", "req-9f3a", "shard-3", "tx-71c", "sess-0b2", "nod
 
 func main() {
 	pflag.StringP("server_address", "s", "localhost:50051", "address of hippocampus server")
-	pflag.IntP("entries", "n", 5000, "number of log lines (memories) to generate")
-	pflag.IntP("days", "d", 30, "how many days of history to spread the lines across, ending shortly before now")
+	pflag.IntP("entries", "n", 5000, "number of log lines (memories) to generate (one-shot mode)")
+	pflag.IntP("days", "d", 30, "how many days of history to spread the lines across, ending shortly before now (one-shot mode)")
+	pflag.Bool("live", false, "trickle new lines continuously at the current time instead of loading a fixed back-dated batch")
+	pflag.Int("rate", 60, "with --live, approximate lines per minute to emit")
+	pflag.Duration("duration", 0, "with --live, how long to run before stopping (0 = until interrupted)")
 	client.RegisterAuthFlags(pflag.CommandLine)
 	pflag.Parse()
 
@@ -96,6 +102,25 @@ func main() {
 	defer conn.Close()
 
 	client := hippo.NewHippocampusClient(conn)
+
+	if viper.GetBool("live") {
+		// A continuous trickle at the current time: lines age in real wall-clock, and the service's
+		// own sleep cycle plus capacity eviction reap the low-significance noise as the store fills.
+		// Runs until --duration elapses or the process is interrupted.
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+
+		if d := viper.GetDuration("duration"); d > 0 {
+			var cancel context.CancelFunc
+
+			ctx, cancel = context.WithTimeout(ctx, d)
+			defer cancel()
+		}
+
+		executeLive(ctx, client, viper.GetInt("rate"))
+
+		return
+	}
 
 	execute(client, viper.GetInt("entries"), viper.GetInt("days"))
 }
@@ -133,28 +158,9 @@ func execute(client hippo.HippocampusClient, entries int, days int) {
 	for i := 0; i < entries; i++ {
 		ts += step(increment)
 
-		service := services[rand.Intn(len(services))]
-		lvl := pickLevel()
-
-		eventId := currentEvent(ctx, client, states, service, ts, dayNanos)
-
-		body := fmt.Sprintf("[%s] %s", lvl.name, renderMessage(lvl.name))
-
-		m := &hippo.Memory{
-			EventId:      eventId,
-			Group:        service,
-			Significance: jitterSignificance(lvl.significance),
-			TimeStamp:    ts,
-			Body:         body,
+		if emitLine(ctx, client, states, ts, dayNanos) {
+			stored++
 		}
-
-		if _, err := client.StoreMemory(ctx, m); err != nil {
-			fmt.Printf("ERROR storing memory: %s\n", err.Error())
-
-			continue
-		}
-
-		stored++
 	}
 
 	// Close every still-open daily event at the last line it saw.
@@ -163,6 +169,70 @@ func execute(client hippo.HippocampusClient, entries int, days int) {
 	}
 
 	fmt.Printf("stored %d log lines across %d services over %d days\n", stored, len(services), days)
+}
+
+// executeLive trickles new lines at the current time until ctx is cancelled (by --duration or a
+// SIGINT/SIGTERM), pacing to roughly rate lines per minute. It never back-dates, so the memories age
+// in real wall-clock and the service's sleep cycle reaps them as they fall below the threshold.
+func executeLive(ctx context.Context, client hippo.HippocampusClient, rate int) {
+	if rate < 1 {
+		rate = 1
+	}
+
+	dayNanos := int64(24 * time.Hour)
+
+	// One Wait per line across a one-minute window gives roughly rate lines per minute.
+	pacer := pace.NewPacer(time.Minute, rate)
+
+	states := make(map[string]*serviceState, len(services))
+	stored := 0
+
+	fmt.Printf("trickling ~%d log lines/min across %d services (interrupt to stop)\n", rate, len(services))
+
+	for ctx.Err() == nil {
+		if emitLine(ctx, client, states, time.Now().UnixNano(), dayNanos) {
+			stored++
+		}
+
+		if err := pacer.Wait(ctx); err != nil {
+
+			break
+		}
+	}
+
+	// Close the open daily events on the way out, using a fresh context since ctx is now cancelled.
+	for service, st := range states {
+		endEvent(context.Background(), client, st.eventId, st.endTs, service)
+	}
+
+	fmt.Printf("stored %d log lines before stopping\n", stored)
+}
+
+// emitLine stores one log line at ts: it picks a service and level, attaches the line to the
+// service's current daily event, and stores the memory. It reports whether the store succeeded.
+func emitLine(ctx context.Context, client hippo.HippocampusClient, states map[string]*serviceState, ts int64, dayNanos int64) bool {
+	service := services[rand.Intn(len(services))]
+	lvl := pickLevel()
+
+	eventId := currentEvent(ctx, client, states, service, ts, dayNanos)
+
+	body := fmt.Sprintf("[%s] %s", lvl.name, renderMessage(lvl.name))
+
+	m := &hippo.Memory{
+		EventId:      eventId,
+		Group:        service,
+		Significance: jitterSignificance(lvl.significance),
+		TimeStamp:    ts,
+		Body:         body,
+	}
+
+	if _, err := client.StoreMemory(ctx, m); err != nil {
+		fmt.Printf("ERROR storing memory: %s\n", err.Error())
+
+		return false
+	}
+
+	return true
 }
 
 // currentEvent returns the event id the line should attach to, creating a new per-service daily
