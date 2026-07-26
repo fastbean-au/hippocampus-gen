@@ -17,9 +17,11 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	hippo "github.com/fastbean-au/hippocampus/contract"
+
+	"github.com/fastbean-au/hippocampus-gen/internal/client"
+	"github.com/fastbean-au/hippocampus-gen/internal/oidc"
 )
 
 // level is one log severity, its relative frequency, and the base memory significance a line at
@@ -60,6 +62,7 @@ func main() {
 	pflag.StringP("server_address", "s", "localhost:50051", "address of hippocampus server")
 	pflag.IntP("entries", "n", 5000, "number of log lines (memories) to generate")
 	pflag.IntP("days", "d", 30, "how many days of history to spread the lines across, ending shortly before now")
+	client.RegisterAuthFlags(pflag.CommandLine)
 	pflag.Parse()
 
 	if err := viper.BindPFlags(pflag.CommandLine); err != nil {
@@ -67,8 +70,22 @@ func main() {
 		os.Exit(1)
 	}
 
-	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	// Build the dial options, adding the bearer-token interceptor when auth is configured. All viper
+	// reads stay here in main; the client package takes the resolved values.
+	opts, err := client.DialOptions(context.Background(), oidc.AuthConfig{
+		Token: viper.GetString("token"),
+		ClientCredentialsConfig: oidc.ClientCredentialsConfig{
+			Issuer:       viper.GetString("oidc-issuer"),
+			TokenURL:     viper.GetString("oidc-token-url"),
+			ClientID:     viper.GetString("oidc-client-id"),
+			ClientSecret: viper.GetString("oidc-client-secret"),
+			Scope:        viper.GetString("oidc-scope"),
+			Audience:     viper.GetString("oidc-audience"),
+		},
+	})
+	if err != nil {
+		fmt.Printf("ERROR: %s\n", err.Error())
+		os.Exit(1)
 	}
 
 	conn, err := grpc.NewClient(viper.GetString("server_address"), opts...)

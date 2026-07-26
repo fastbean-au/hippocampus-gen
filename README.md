@@ -2,7 +2,29 @@
 
 Test data generator for Hippocampus. These programs will create sample or test data for use with the [Hippocampus](https://github.com/fastbean-au/hippocampus) service.
 
-The module builds against the published `github.com/fastbean-au/hippocampus` contract (currently `v0.14.1`). Because that module is private, set `GOPRIVATE=github.com/fastbean-au/*` so `go` fetches it directly rather than through the public proxy and checksum database. Each generator takes `-s <host:port>` for the target gRPC address (default `localhost:50051`) and speaks plain, unauthenticated gRPC — point it at a demonstration instance, not a secured deployment. See the service's [Demonstrations](https://github.com/fastbean-au/hippocampus/blob/main/docs/demonstrations.md) guide for worked end-to-end examples in embedded and centralised modes.
+The module builds against the published `github.com/fastbean-au/hippocampus` contract (currently `v0.14.1`). Because that module is private, set `GOPRIVATE=github.com/fastbean-au/*` so `go` fetches it directly rather than through the public proxy and checksum database. Each generator takes `-s <host:port>` for the target gRPC address (default `localhost:50051`). By default they speak plain, unauthenticated gRPC; see [Authentication](#authentication) to drive a service that requires a bearer token. See the service's [Demonstrations](https://github.com/fastbean-au/hippocampus/blob/main/docs/demonstrations.md) guide for worked end-to-end examples in embedded and centralised modes.
+
+## Authentication
+
+When the target service enables auth (`auth.method` `hmac` or `idp`), every generator accepts the same auth flags:
+
+- `--token <jwt>` — a static bearer token (e.g. one minted by `hippocampus --mint-token`), sent on every RPC. Handy against an `hmac` instance.
+- `--oidc-issuer` / `--oidc-client-id` / `--oidc-client-secret` — an OIDC **client-credentials** (machine-to-machine) grant. The token endpoint is discovered from the issuer (`<issuer>/.well-known/openid-configuration`), or set it directly with `--oidc-token-url`. The token is fetched on first use and refreshed automatically before it expires.
+- `--oidc-scope` — scopes to request in the grant.
+- `--oidc-audience` — the API audience. **Auth0** needs this set to the API identifier to mint a verifiable JWT access token; **Keycloak** ignores it.
+
+The token's role must cover what the generator does: the `book` summarisation pass calls `Sleep` (admin), so it needs an **admin**-tier client; the plain loaders only store events and memories (**writer**). With no auth flags, behaviour is unchanged — plain, unauthenticated gRPC.
+
+```bash
+# hmac instance, static token:
+go run ./cmd/logs -s localhost:50051 -n 3000 -d 20 --token "$(hippocampus --mint-token --role writer -c config.json)"
+
+# idp instance (Keycloak / Auth0), machine-to-machine:
+go run ./cmd/book -s localhost:50051 --summarize \
+  --oidc-issuer https://issuer.example/realms/hippocampus \
+  --oidc-client-id hippocampus-gen --oidc-client-secret "$SECRET" \
+  --oidc-audience https://api.hippocampus.demo
+```
 
 ## Random
 
