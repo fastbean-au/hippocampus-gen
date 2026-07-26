@@ -23,13 +23,20 @@ import (
 var (
 	//go:embed great_expectations.txt
 	data []byte
+
+	//go:embed gtexp.txt
+	playData []byte
 )
 
 func main() {
 	pflag.StringP("server_address", "s", "localhost:50051", "address of hippocampus server")
+	pflag.BoolP("summarize", "S", false, "after loading the book, summarise ripe events using the stage-play adaptation")
 	pflag.Parse()
 
-	viper.BindPFlags(pflag.CommandLine)
+	if err := viper.BindPFlags(pflag.CommandLine); err != nil {
+		fmt.Printf("ERROR: %s\n", err.Error())
+		os.Exit(1)
+	}
 
 	// Create the gRPC client
 	var opts = []grpc.DialOption{
@@ -40,11 +47,19 @@ func main() {
 		fmt.Printf("ERROR: %s\n", err.Error())
 		os.Exit(1)
 	}
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			fmt.Printf("ERROR closing connection: %s\n", err.Error())
+		}
+	}()
 
 	client := hippo.NewHippocampusClient(conn)
 
 	execute(client)
+
+	if viper.GetBool("summarize") {
+		summarize(client)
+	}
 }
 
 var ChapterRegex = regexp.MustCompile(`^Chapter ([IVXLCDM]+)[.]$`)

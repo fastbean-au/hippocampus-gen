@@ -2,7 +2,7 @@
 
 Test data generator for Hippocampus. These programs will create sample or test data for use with the [Hippocampus](https://github.com/fastbean-au/hippocampus) service.
 
-The module has a `replace` directive pointing at `../hippocampus`, so it always builds against your local checkout's contract. Each generator takes `-s <host:port>` for the target gRPC address (default `localhost:50051`) and speaks plain, unauthenticated gRPC — point it at a demonstration instance, not a secured deployment. See the service's [Demonstrations](https://github.com/fastbean-au/hippocampus/blob/main/docs/demonstrations.md) guide for worked end-to-end examples in embedded and centralised modes.
+The module builds against the published `github.com/fastbean-au/hippocampus` contract (currently `v0.14.1`). Because that module is private, set `GOPRIVATE=github.com/fastbean-au/*` so `go` fetches it directly rather than through the public proxy and checksum database. Each generator takes `-s <host:port>` for the target gRPC address (default `localhost:50051`) and speaks plain, unauthenticated gRPC — point it at a demonstration instance, not a secured deployment. See the service's [Demonstrations](https://github.com/fastbean-au/hippocampus/blob/main/docs/demonstrations.md) guide for worked end-to-end examples in embedded and centralised modes.
 
 ## Random
 
@@ -36,6 +36,14 @@ go run cmd/book/main.go
 ```
 
 The timeline is laid across a fixed window ending shortly before now (the service rejects memory timestamps more than a few minutes in the future), so the dates are internally consistent and in the past, though they still do not track the novel's own chronology.
+
+### Summaries
+
+With `--summarize` (`-S`), the generator exercises Hippocampus's summarization flow once the book is loaded: it triggers a consolidation cycle (`Sleep`), asks the service which events it considers ready to condense (`GetSummarizationCandidates`), and replaces each such event's memories with a single summary memory (`ReplaceMemoriesWithSummary`). The summary text is drawn from W.S. Gilbert's 1871 stage adaptation of the same novel, mapped scene by scene onto the chapters it retells. Candidates are only returned when the service is configured with `consolidation.summarizationMinMemories`, so point this at an instance that has it set — otherwise the pass finds nothing to summarize. Without the flag, behaviour is unchanged.
+
+```bash
+go run cmd/book/main.go --summarize
+```
 
 ## Logs
 

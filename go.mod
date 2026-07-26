@@ -2,13 +2,11 @@ module github.com/fastbean-au/hippocampus-gen
 
 go 1.25.0
 
-replace github.com/fastbean-au/hippocampus => ../hippocampus
-
 require (
-	github.com/fastbean-au/hippocampus v0.0.0-00010101000000-000000000000
+	github.com/fastbean-au/hippocampus v0.14.1
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
-	google.golang.org/grpc v1.82.0
+	google.golang.org/grpc v1.82.1
 )
 
 require (
