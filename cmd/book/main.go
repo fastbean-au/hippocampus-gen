@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"os/signal"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/fastbean-au/hippocampus-gen/internal/client"
 	"github.com/fastbean-au/hippocampus-gen/internal/oidc"
+	"github.com/fastbean-au/hippocampus-gen/internal/pace"
 )
 
 var (
@@ -33,6 +36,11 @@ var (
 func main() {
 	pflag.StringP("server_address", "s", "localhost:50051", "address of hippocampus server")
 	pflag.BoolP("summarize", "S", false, "after loading the book, summarise ripe events using the stage-play adaptation")
+	pflag.Bool("loop", false, "run continuously, reloading every --period instead of loading the book once")
+	pflag.Duration("period", 24*time.Hour, "with --loop, how often to run a cycle")
+	pflag.Bool("reset", false, "purge the store at the start of each cycle, for a clean reload each period (needs an admin token)")
+	pflag.Duration("pace-window", 0, "spread each load across this wall-clock window instead of bursting (0 = burst)")
+	pflag.Bool("live", false, "stamp writes at the current time so they age in real time, instead of back-dating across the book's timeline")
 	client.RegisterAuthFlags(pflag.CommandLine)
 	pflag.Parse()
 
@@ -72,11 +80,51 @@ func main() {
 
 	client := hippo.NewHippocampusClient(conn)
 
-	execute(client)
+	// A cycle is one pass of the showcase shape: optionally purge for a clean slate, load the book
+	// (paced and/or live per the flags), then optionally summarise ripe events. With --loop it runs
+	// every --period until interrupted; otherwise it runs exactly once.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	if viper.GetBool("summarize") {
-		summarize(client)
+	loadOpts := loadOptions{
+		live:       viper.GetBool("live"),
+		paceWindow: viper.GetDuration("pace-window"),
 	}
+
+	reset := viper.GetBool("reset")
+	summarise := viper.GetBool("summarize")
+
+	cycle := func(ctx context.Context) error {
+		if reset {
+			if _, err := client.Purge(ctx, &hippo.EmptyRequest{}); err != nil {
+
+				return fmt.Errorf("purging store: %w", err)
+			}
+
+			fmt.Println("purged store")
+		}
+
+		if err := execute(ctx, client, loadOpts); err != nil {
+
+			return err
+		}
+
+		if summarise {
+			summarize(client)
+		}
+
+		return nil
+	}
+
+	period := time.Duration(0)
+
+	if viper.GetBool("loop") {
+		period = viper.GetDuration("period")
+	}
+
+	pace.Loop(ctx, period, cycle, func(err error) {
+		fmt.Printf("ERROR: cycle failed: %s\n", err.Error())
+	})
 }
 
 var ChapterRegex = regexp.MustCompile(`^Chapter ([IVXLCDM]+)[.]$`)
@@ -88,9 +136,19 @@ var ChapterRegex = regexp.MustCompile(`^Chapter ([IVXLCDM]+)[.]$`)
 // divide the span between them, and advance by at most that increment each time.
 const bookSpan = 2 * 365 * 24 * time.Hour
 
-func execute(client hippo.HippocampusClient) {
-	ctx := context.Background()
+// loadOptions controls how execute lays the book down. The zero value reproduces the original
+// behaviour: the whole timeline back-dated across bookSpan and streamed in a burst. live stamps each
+// write at the current time instead, so the memories age in real wall-clock (what a live showcase
+// wants); paceWindow spreads the writes across that window rather than bursting them.
+type loadOptions struct {
+	live       bool
+	paceWindow time.Duration
+}
 
+// execute streams the book: an event per chapter, a memory per paragraph. It returns ctx.Err() if
+// the context is cancelled mid-load (so a caller stops the run and skips summarising), and nil once
+// the whole book is loaded.
+func execute(ctx context.Context, client hippo.HippocampusClient, opts loadOptions) error {
 	paragraphs, chapters := countSteps(data)
 
 	// A chapter advances the clock ten times as far as a paragraph (a deliberate gap between
@@ -102,9 +160,23 @@ func execute(client hippo.HippocampusClient) {
 
 	increment := bookSpan.Nanoseconds() / units
 
+	// Pace across the window using one Wait per write (every paragraph and chapter is one write).
+	pacer := pace.NewPacer(opts.paceWindow, paragraphs+chapters)
+
 	memory := ""
 	eventId := ""
 	ts := time.Now().Add(-bookSpan - time.Hour).UnixNano()
+
+	// nextTs advances the timeline for the next write: to now in live mode, or forward by the
+	// pre-sized increment in back-dated mode.
+	nextTs := func(inc int64) int64 {
+		if opts.live {
+
+			return time.Now().UnixNano()
+		}
+
+		return ts + step(inc)
+	}
 
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
@@ -115,7 +187,7 @@ func execute(client hippo.HippocampusClient) {
 		// Check for completed paragraph (memory) & store
 		if line == "" {
 			if memory != "" {
-				ts += step(increment)
+				ts = nextTs(increment)
 
 				m := &hippo.Memory{
 					EventId:      eventId,
@@ -130,6 +202,11 @@ func execute(client hippo.HippocampusClient) {
 				}
 
 				memory = ""
+
+				if err := pacer.Wait(ctx); err != nil {
+
+					return err
+				}
 			}
 			continue
 		}
@@ -152,7 +229,7 @@ func execute(client hippo.HippocampusClient) {
 				}
 
 				// Create the start of the new event
-				ts += step(increment * 10)
+				ts = nextTs(increment * 10)
 
 				e := &hippo.Event{
 					TimeStart:    ts,
@@ -174,6 +251,11 @@ func execute(client hippo.HippocampusClient) {
 					memory = ""
 				}
 
+				if err := pacer.Wait(ctx); err != nil {
+
+					return err
+				}
+
 				continue
 			}
 		}
@@ -181,6 +263,8 @@ func execute(client hippo.HippocampusClient) {
 		memory += " " + line
 
 	}
+
+	return nil
 }
 
 // countSteps counts the paragraphs (memories) and chapters (events) in the book using the same

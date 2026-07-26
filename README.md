@@ -67,6 +67,23 @@ With `--summarize` (`-S`), the generator exercises Hippocampus's summarization f
 go run cmd/book/main.go --summarize
 ```
 
+### Live, paced, and looping (the 24-hour showcase)
+
+By default the book is laid across a back-dated timeline and streamed in a burst. For a hosted showcase that *creates over time → summarises → decays*, and repeats each day, these flags reshape the run:
+
+- `--live` — stamp each write at the current time instead of back-dating, so the memories age in real wall-clock (and, with a compressed decay clock on the service, ripen for consolidation and summarisation within the run).
+- `--pace-window <dur>` — spread the load across this window rather than bursting it, so events and memories appear *over time* (e.g. `--pace-window 2h`).
+- `--loop` with `--period <dur>` (default `24h`) — run continuously, one cycle per period, until interrupted (Ctrl-C / SIGTERM stops it promptly, even mid-load).
+- `--reset` — purge the store at the start of each cycle, for a clean, deterministic reload each period. Purge is admin-tier, so this needs an **admin** token (see [Authentication](#authentication)).
+
+```bash
+# A self-perpetuating book showcase: each day, purge, reload the novel spread across two hours
+# with live timestamps, then summarise the ripe events.
+go run cmd/book/main.go -s localhost:50051 \
+  --loop --period 24h --reset --pace-window 2h --live --summarize \
+  --token "$(hippocampus --mint-token --role admin -c config.json)"
+```
+
 ## Logs
 
 A log-shaped generator: each synthetic log line becomes a memory whose significance is derived from the line's **level** (`DEBUG` lowest … `FATAL` highest), tagged with its emitting **service** via the `group` label, with lines grouped into one **event per service per day**. It is the demonstration that makes significance-driven forgetting concrete — after a sleep cycle, routine `DEBUG`/`INFO` noise is consolidated away first while `ERROR`/`FATAL` lines survive.
