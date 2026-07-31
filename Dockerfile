@@ -5,9 +5,14 @@
 # //go:embed, so no runtime assets are required.
 ARG GO_VERSION=1.25
 
-FROM golang:${GO_VERSION}-alpine AS build
+# Build on the native BUILDPLATFORM and cross-compile to TARGETOS/TARGETARCH. Because CGO is disabled
+# the cross-compile is a plain GOARCH switch, so a multi-arch build (linux/amd64 + linux/arm64) never
+# pays for QEMU emulation of the toolchain - each target is compiled natively on the amd64 runner.
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
 
 ARG CMD
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /src
 
@@ -17,8 +22,11 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/generator ./cmd/${CMD}
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags "-s -w" -o /out/generator ./cmd/${CMD}
 
+# The final stage is naturally the TARGETPLATFORM; distroless/static is a multi-arch base, so buildx
+# selects the matching arch for each platform in the build.
 FROM gcr.io/distroless/static:nonroot
 
 COPY --from=build /out/generator /generator

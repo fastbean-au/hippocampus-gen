@@ -54,6 +54,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          # The Dockerfile cross-compiles from BUILDPLATFORM (CGO disabled), so both arches build
+          # natively on the amd64 runner - no setup-qemu step needed.
+          platforms: linux/amd64,linux/arm64
           build-args: |
             CMD=${{ matrix.generator }}
           push: true
