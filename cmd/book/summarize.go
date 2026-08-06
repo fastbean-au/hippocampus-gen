@@ -59,9 +59,9 @@ func summarize(client hippo.HippocampusClient) {
 		return
 	}
 
-	resp, err := client.GetSummarizationCandidates(ctx, &hippo.EmptyRequest{})
+	resp, err := client.GetSummarisationCandidates(ctx, &hippo.EmptyRequest{})
 	if err != nil {
-		fmt.Printf("ERROR getting summarization candidates: %s\n", err.Error())
+		fmt.Printf("ERROR getting summarisation candidates: %s\n", err.Error())
 
 		return
 	}
