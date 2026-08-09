@@ -32,6 +32,41 @@ func New(id string, significance int32) *hippo.Link {
 	}
 }
 
+// Dedupe collapses links naming the same target into one, keeping the highest significance declared
+// for it at the position of its first appearance.
+//
+// Two threads legitimately arrive at the same item - a paragraph naming both Joe and Biddy follows
+// the last paragraph that named them both, so both character threads have it as their head - and the
+// service rejects a write declaring the same target twice rather than silently letting the last one
+// win, since it upserts per pair. Collapsing is therefore the caller's job, and the strongest weight
+// is the one to keep: a pair is as closely associated as its closest thread makes it.
+func Dedupe(links []*hippo.Link) []*hippo.Link {
+	if len(links) < 2 {
+
+		return links
+	}
+
+	positions := make(map[string]int, len(links))
+	out := make([]*hippo.Link, 0, len(links))
+
+	for _, l := range links {
+		i, seen := positions[l.GetId()]
+
+		if !seen {
+			positions[l.GetId()] = len(out)
+			out = append(out, l)
+
+			continue
+		}
+
+		if l.GetSignificance() > out[i].GetSignificance() {
+			out[i] = l
+		}
+	}
+
+	return out
+}
+
 // head is the most recent item recorded on one thread: the id a new member of that thread links back
 // to, and the clock reading at which it was recorded.
 type head struct {

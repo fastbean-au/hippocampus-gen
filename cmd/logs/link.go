@@ -71,6 +71,10 @@ func newThreads() *threads {
 // memoryLinks resolves the links a new line declares: its request trace, and - for an ERROR or
 // FATAL - its service's incident chain. A line below WARN declares none, however much it is part of
 // a trace; it still advances the token thread, so the failure that follows can link back to it.
+//
+// The two threads meet whenever the previous line on this token was also this service's previous
+// error, and the same target must not be named twice in one write, so the links are deduplicated -
+// leaving one link at the heavier of the two weights.
 func (t *threads) memoryLinks(l line) []*hippo.Link {
 	if l.level.rank < warnRank {
 
@@ -89,7 +93,7 @@ func (t *threads) memoryLinks(l line) []*hippo.Link {
 		}
 	}
 
-	return links
+	return link.Dedupe(links)
 }
 
 // advanceMemory moves the threads a stored line is now the head of: its token always, and its

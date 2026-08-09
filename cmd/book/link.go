@@ -89,6 +89,11 @@ func mentioned(body string) []character {
 // characterLinks resolves the head of each mentioned character's thread into the links the new
 // paragraph declares. A character met for the first time contributes nothing - there is nothing yet
 // to point at - so the first paragraph naming anyone is always the far end of someone else's link.
+//
+// Several threads commonly share a head, since characters who appear together tend to keep appearing
+// together, and the same target must not be named twice in one write. The links are therefore
+// deduplicated, which leaves a pair of paragraphs bound at the weight of the most significant
+// character they have in common.
 func characterLinks(threads *link.Threads, cast []character, clock int64) []*hippo.Link {
 	links := make([]*hippo.Link, 0, len(cast))
 
@@ -102,7 +107,7 @@ func characterLinks(threads *link.Threads, cast []character, clock int64) []*hip
 		links = append(links, link.New(head, c.significance))
 	}
 
-	return links
+	return link.Dedupe(links)
 }
 
 // advanceCharacters moves every mentioned character's thread onto the paragraph just stored, so the

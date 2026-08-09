@@ -162,6 +162,43 @@ func TestRecentIgnoresUnstoredId(t *testing.T) {
 	}
 }
 
+func TestDedupeKeepsStrongestPerTarget(t *testing.T) {
+	links := Dedupe([]*hippo.Link{
+		New("m-1", 4000),
+		New("m-2", 12000),
+		New("m-1", 20000),
+		New("m-1", 6000),
+	})
+
+	if len(links) != 2 {
+		t.Fatalf("expected two distinct targets, got %d", len(links))
+	}
+
+	// First-appearance order is kept, so m-1 stays ahead of m-2 despite its strongest weight arriving
+	// third.
+	if links[0].GetId() != "m-1" || links[1].GetId() != "m-2" {
+		t.Fatalf("expected first-appearance order, got %q then %q", links[0].GetId(), links[1].GetId())
+	}
+
+	if links[0].GetSignificance() != 20000 {
+		t.Fatalf("expected the strongest weight for m-1, got %d", links[0].GetSignificance())
+	}
+}
+
+func TestDedupeLeavesDistinctLinksAlone(t *testing.T) {
+	in := []*hippo.Link{New("m-1", 100), New("m-2", 200)}
+
+	if got := Dedupe(in); len(got) != 2 {
+		t.Fatalf("expected both links to survive, got %d", len(got))
+	}
+}
+
+func TestDedupeHandlesEmpty(t *testing.T) {
+	if got := Dedupe(nil); len(got) != 0 {
+		t.Fatalf("expected nothing from no links, got %d", len(got))
+	}
+}
+
 func TestStoreMemoryRetriesWithoutLinksOnNotFound(t *testing.T) {
 	f := &fakeClient{failNext: status.Error(codes.NotFound, "link target 'gone' does not exist")}
 
