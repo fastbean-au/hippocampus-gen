@@ -19,3 +19,8 @@
 
 # Go workspace file
 go.work
+
+# This project's binaries
+cmd/book/book
+cmd/logs/logs
+cmd/random/random

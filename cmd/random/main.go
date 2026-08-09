@@ -32,10 +32,14 @@ func main() {
 	pflag.IntP("memory_length", "l", 256, "length of memories")
 	pflag.IntP("memories_without_events", "p", 50, "percentage of memories without events")
 	pflag.IntP("workers", "w", 5, "number of workers")
+	pflag.IntP("links", "L", 0, "link each event and each standalone memory to up to this many earlier ones (0 = no links)")
 	pflag.StringP("server_address", "s", "localhost:50051", "address of hippocampus server")
 	pflag.Parse()
 
-	viper.BindPFlags(pflag.CommandLine)
+	if err := viper.BindPFlags(pflag.CommandLine); err != nil {
+		fmt.Printf("ERROR: %s\n", err.Error())
+		os.Exit(1)
+	}
 
 	dictByLen = make(map[int][]string)
 
@@ -64,6 +68,7 @@ func main() {
 	memoryCount := viper.GetInt("memories")
 	memoriesWithoutEventsCount := viper.GetInt("memories_without_events")
 	memoryLength := viper.GetInt("memory_length")
+	links := viper.GetInt("links")
 
 	eventMemories := int(float64(memoryCount * memoriesWithoutEventsCount / 100))
 	memoriesWithoutEvents := memoryCount - eventMemories
@@ -94,7 +99,15 @@ func main() {
 				mpw++
 			}
 
-			g := generator.New(dict, dictByLen, MaxWordLength, memoryLength, client)
+			g := generator.New(generator.Config{
+				Dict:          dict,
+				DictByLen:     dictByLen,
+				MaxWordLength: MaxWordLength,
+				MemoryLength:  memoryLength,
+				Links:         links,
+				Client:        client,
+			})
+
 			g.Execute(epw, mpe, mpw, &wg)
 		}(i, epw, mpe, mpw)
 	}

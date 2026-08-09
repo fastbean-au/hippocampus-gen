@@ -21,6 +21,7 @@ import (
 	hippo "github.com/fastbean-au/hippocampus/contract"
 
 	"github.com/fastbean-au/hippocampus-gen/internal/client"
+	"github.com/fastbean-au/hippocampus-gen/internal/link"
 	"github.com/fastbean-au/hippocampus-gen/internal/oidc"
 	"github.com/fastbean-au/hippocampus-gen/internal/pace"
 )
@@ -41,6 +42,7 @@ func main() {
 	pflag.Bool("reset", false, "purge the store at the start of each cycle, for a clean reload each period (needs an admin token)")
 	pflag.Duration("pace-window", 0, "spread each load across this wall-clock window instead of bursting (0 = burst)")
 	pflag.Bool("live", false, "stamp writes at the current time so they age in real time, instead of back-dating across the book's timeline")
+	pflag.Bool("links", true, "associate paragraphs that name the same character, and each chapter with the one before it (--links=false loads them unlinked)")
 	client.RegisterAuthFlags(pflag.CommandLine)
 	pflag.Parse()
 
@@ -89,6 +91,7 @@ func main() {
 	loadOpts := loadOptions{
 		live:       viper.GetBool("live"),
 		paceWindow: viper.GetDuration("pace-window"),
+		links:      viper.GetBool("links"),
 	}
 
 	reset := viper.GetBool("reset")
@@ -136,13 +139,14 @@ var ChapterRegex = regexp.MustCompile(`^Chapter ([IVXLCDM]+)[.]$`)
 // divide the span between them, and advance by at most that increment each time.
 const bookSpan = 2 * 365 * 24 * time.Hour
 
-// loadOptions controls how execute lays the book down. The zero value reproduces the original
-// behaviour: the whole timeline back-dated across bookSpan and streamed in a burst. live stamps each
-// write at the current time instead, so the memories age in real wall-clock (what a live showcase
-// wants); paceWindow spreads the writes across that window rather than bursting them.
+// loadOptions controls how execute lays the book down. live stamps each write at the current time
+// instead of back-dating it across the book's timeline, so the memories age in real wall-clock (what
+// a live showcase wants); paceWindow spreads the writes across that window rather than bursting
+// them; links declares the character and chapter associations described in link.go.
 type loadOptions struct {
 	live       bool
 	paceWindow time.Duration
+	links      bool
 }
 
 // execute streams the book: an event per chapter, a memory per paragraph. It returns ctx.Err() if
@@ -166,6 +170,10 @@ func execute(ctx context.Context, client hippo.HippocampusClient, opts loadOptio
 	memory := ""
 	eventId := ""
 	ts := time.Now().Add(-bookSpan - time.Hour).UnixNano()
+
+	// One thread per character, keyed on the paragraph timestamps, so the threads age with the book's
+	// own clock in either mode. Unused when linking is off.
+	threads := newCharacterThreads()
 
 	// nextTs advances the timeline for the next write: to now in live mode, or forward by the
 	// pre-sized increment in back-dated mode.
@@ -196,10 +204,21 @@ func execute(ctx context.Context, client hippo.HippocampusClient, opts loadOptio
 					Body:         memory,
 				}
 
-				_, err := client.StoreMemory(ctx, m)
+				// The paragraph's cast decides both what it links back to and which threads it
+				// becomes the head of, so it is resolved once, before the body is handed over.
+				var cast []character
+
+				if opts.links {
+					cast = mentioned(memory)
+					m.Links = characterLinks(threads, cast, ts)
+				}
+
+				id, err := link.StoreMemory(ctx, client, m)
 				if err != nil {
 					fmt.Printf("ERROR storing memory: %s\n", err.Error())
 				}
+
+				advanceCharacters(threads, cast, id, ts)
 
 				memory = ""
 
@@ -228,7 +247,7 @@ func execute(ctx context.Context, client hippo.HippocampusClient, opts loadOptio
 					}
 				}
 
-				// Create the start of the new event
+				// Create the start of the new event, linked back to the chapter it follows.
 				ts = nextTs(increment * 10)
 
 				e := &hippo.Event{
@@ -238,13 +257,17 @@ func execute(ctx context.Context, client hippo.HippocampusClient, opts loadOptio
 					Description:  line,
 				}
 
-				r, err := client.StoreEvent(ctx, e)
+				if opts.links && eventId != "" {
+					e.Links = []*hippo.Link{link.New(eventId, chapterLinkSignificance)}
+				}
+
+				id, err := link.StoreEvent(ctx, client, e)
 				if err != nil {
 					fmt.Printf("ERROR storing event: %s\n", err.Error())
 					continue
 				}
 
-				eventId = r.GetId()
+				eventId = id
 
 				if memory != "" {
 					fmt.Printf("MEMORY NOT EMPTY!!! '%s'\n", line)

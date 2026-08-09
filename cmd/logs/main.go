@@ -23,27 +23,38 @@ import (
 	hippo "github.com/fastbean-au/hippocampus/contract"
 
 	"github.com/fastbean-au/hippocampus-gen/internal/client"
+	"github.com/fastbean-au/hippocampus-gen/internal/link"
 	"github.com/fastbean-au/hippocampus-gen/internal/oidc"
 	"github.com/fastbean-au/hippocampus-gen/internal/pace"
 )
 
-// level is one log severity, its relative frequency, and the base memory significance a line at
-// that level is stored with. The significances span the int32 range so the decay/eviction machinery
-// treats DEBUG noise and FATAL errors very differently.
+// level is one log severity, its relative frequency, the base memory significance a line at that
+// level is stored with, and its severity ordinal. The significances span the int32 range so the
+// decay/eviction machinery treats DEBUG noise and FATAL errors very differently; the rank is what
+// the association rules in link.go compare against, since a level arrives by value and cannot be
+// placed in the table by index.
 type level struct {
 	name         string
 	weight       float64
 	significance int32
+	rank         int
 }
+
+// Severity ranks worth naming: the thresholds at which a line starts declaring links.
+const (
+	warnRank  = 3
+	errorRank = 4
+	fatalRank = 5
+)
 
 // levels are ordered least to most severe; weights are a rough real-world mix (mostly INFO/DEBUG,
 // rarely FATAL). They need not sum to 1 — pickLevel normalises against their running total.
 var levels = []level{
-	{"DEBUG", 0.40, 2000},
-	{"INFO", 0.38, 6000},
-	{"WARN", 0.14, 16000},
-	{"ERROR", 0.07, 28000},
-	{"FATAL", 0.01, 32000},
+	{"DEBUG", 0.40, 2000, 1},
+	{"INFO", 0.38, 6000, 2},
+	{"WARN", 0.14, 16000, warnRank},
+	{"ERROR", 0.07, 28000, errorRank},
+	{"FATAL", 0.01, 32000, fatalRank},
 }
 
 // services are the emitting components; each becomes a group label on its memories and events.
@@ -68,6 +79,7 @@ func main() {
 	pflag.Bool("live", false, "trickle new lines continuously at the current time instead of loading a fixed back-dated batch")
 	pflag.Int("rate", 60, "with --live, approximate lines per minute to emit")
 	pflag.Duration("duration", 0, "with --live, how long to run before stopping (0 = until interrupted)")
+	pflag.Bool("links", true, "associate lines sharing a correlation token, chain each service's errors and its daily events (--links=false emits them unlinked)")
 	client.RegisterAuthFlags(pflag.CommandLine)
 	pflag.Parse()
 
@@ -117,13 +129,16 @@ func main() {
 			defer cancel()
 		}
 
-		executeLive(ctx, client, viper.GetInt("rate"))
+		executeLive(ctx, client, viper.GetInt("rate"), viper.GetBool("links"))
 
 		return
 	}
 
-	execute(client, viper.GetInt("entries"), viper.GetInt("days"))
+	execute(client, viper.GetInt("entries"), viper.GetInt("days"), viper.GetBool("links"))
 }
+
+// dayNanos is the bucket a line's event is chosen by: one event per service per day.
+const dayNanos = int64(24 * time.Hour)
 
 // serviceState tracks the open per-service daily event so lines for the same service and day attach
 // to one event, and the event is ended when the day rolls over.
@@ -133,7 +148,37 @@ type serviceState struct {
 	endTs   int64
 }
 
-func execute(client hippo.HippocampusClient, entries int, days int) {
+// line is one synthetic log line before it is written: what emitted it, how bad it is, the
+// correlation token its message carries (the request it belongs to), and its ordinal in the run,
+// which is the clock the association threads age against.
+type line struct {
+	service string
+	level   level
+	token   string
+	seq     int64
+}
+
+// emitter is everything one run's lines are written through: the client, the open per-service daily
+// events, the association threads, and the line counter those threads age against. A one-shot batch
+// and a live trickle each build one, so they differ only in the timestamps they hand it.
+type emitter struct {
+	client  hippo.HippocampusClient
+	states  map[string]*serviceState
+	threads *threads
+	links   bool
+	seq     int64
+}
+
+func newEmitter(client hippo.HippocampusClient, links bool) *emitter {
+	return &emitter{
+		client:  client,
+		states:  make(map[string]*serviceState, len(services)),
+		threads: newThreads(),
+		links:   links,
+	}
+}
+
+func execute(client hippo.HippocampusClient, entries int, days int, links bool) {
 	ctx := context.Background()
 
 	if entries < 1 {
@@ -144,7 +189,6 @@ func execute(client hippo.HippocampusClient, entries int, days int) {
 		days = 1
 	}
 
-	dayNanos := int64(24 * time.Hour)
 	window := int64(days) * dayNanos
 
 	// Lay the lines across the window ending an hour before now, so no timestamp is future-dated
@@ -152,21 +196,18 @@ func execute(client hippo.HippocampusClient, entries int, days int) {
 	increment := window / int64(entries)
 	ts := time.Now().Add(-time.Duration(window) - time.Hour).UnixNano()
 
-	states := make(map[string]*serviceState, len(services))
+	e := newEmitter(client, links)
 	stored := 0
 
 	for i := 0; i < entries; i++ {
 		ts += step(increment)
 
-		if emitLine(ctx, client, states, ts, dayNanos) {
+		if e.emit(ctx, ts) {
 			stored++
 		}
 	}
 
-	// Close every still-open daily event at the last line it saw.
-	for service, st := range states {
-		endEvent(ctx, client, st.eventId, st.endTs, service)
-	}
+	e.closeEvents(ctx)
 
 	fmt.Printf("stored %d log lines across %d services over %d days\n", stored, len(services), days)
 }
@@ -174,23 +215,21 @@ func execute(client hippo.HippocampusClient, entries int, days int) {
 // executeLive trickles new lines at the current time until ctx is cancelled (by --duration or a
 // SIGINT/SIGTERM), pacing to roughly rate lines per minute. It never back-dates, so the memories age
 // in real wall-clock and the service's sleep cycle reaps them as they fall below the threshold.
-func executeLive(ctx context.Context, client hippo.HippocampusClient, rate int) {
+func executeLive(ctx context.Context, client hippo.HippocampusClient, rate int, links bool) {
 	if rate < 1 {
 		rate = 1
 	}
 
-	dayNanos := int64(24 * time.Hour)
-
 	// One Wait per line across a one-minute window gives roughly rate lines per minute.
 	pacer := pace.NewPacer(time.Minute, rate)
 
-	states := make(map[string]*serviceState, len(services))
+	e := newEmitter(client, links)
 	stored := 0
 
 	fmt.Printf("trickling ~%d log lines/min across %d services (interrupt to stop)\n", rate, len(services))
 
 	for ctx.Err() == nil {
-		if emitLine(ctx, client, states, time.Now().UnixNano(), dayNanos) {
+		if e.emit(ctx, time.Now().UnixNano()) {
 			stored++
 		}
 
@@ -201,53 +240,55 @@ func executeLive(ctx context.Context, client hippo.HippocampusClient, rate int) 
 	}
 
 	// Close the open daily events on the way out, using a fresh context since ctx is now cancelled.
-	for service, st := range states {
-		endEvent(context.Background(), client, st.eventId, st.endTs, service)
-	}
+	e.closeEvents(context.Background())
 
 	fmt.Printf("stored %d log lines before stopping\n", stored)
 }
 
-// emitLine stores one log line at ts: it picks a service and level, attaches the line to the
-// service's current daily event, and stores the memory. It reports whether the store succeeded.
-func emitLine(ctx context.Context, client hippo.HippocampusClient, states map[string]*serviceState, ts int64, dayNanos int64) bool {
-	service := services[rand.Intn(len(services))]
-	lvl := pickLevel()
+// emit stores one log line at ts: it picks a service, a level and the correlation token its message
+// carries, attaches the line to the service's current daily event, declares whatever associations
+// that line has earned, and stores it. It reports whether the store succeeded.
+func (e *emitter) emit(ctx context.Context, ts int64) bool {
+	e.seq++
 
-	eventId := currentEvent(ctx, client, states, service, ts, dayNanos)
-
-	body := fmt.Sprintf("[%s] %s", lvl.name, renderMessage(lvl.name))
+	l := line{
+		service: services[rand.Intn(len(services))],
+		level:   pickLevel(),
+		token:   tokens[rand.Intn(len(tokens))],
+		seq:     e.seq,
+	}
 
 	m := &hippo.Memory{
-		EventId:      eventId,
-		Group:        service,
-		Significance: jitterSignificance(lvl.significance),
+		EventId:      e.currentEvent(ctx, l.service, ts),
+		Group:        l.service,
+		Significance: jitterSignificance(l.level.significance),
 		TimeStamp:    ts,
-		Body:         body,
+		Body:         fmt.Sprintf("[%s] %s", l.level.name, renderMessage(l.level.name, l.token)),
 	}
 
-	if _, err := client.StoreMemory(ctx, m); err != nil {
+	if e.links {
+		m.Links = e.threads.memoryLinks(l)
+	}
+
+	id, err := link.StoreMemory(ctx, e.client, m)
+	if err != nil {
 		fmt.Printf("ERROR storing memory: %s\n", err.Error())
-
-		return false
 	}
 
-	return true
+	if e.links {
+		e.threads.advanceMemory(l, id)
+	}
+
+	return err == nil
 }
 
 // currentEvent returns the event id the line should attach to, creating a new per-service daily
-// event (and ending the previous one) when the day rolls over. Because ts increases monotonically,
-// each service's day buckets are visited in order.
-func currentEvent(ctx context.Context,
-	client hippo.HippocampusClient,
-	states map[string]*serviceState,
-	service string,
-	ts int64,
-	dayNanos int64,
-) string {
+// event (linked to that service's previous day, and ending the previous one) when the day rolls
+// over. Because ts increases monotonically, each service's day buckets are visited in order.
+func (e *emitter) currentEvent(ctx context.Context, service string, ts int64) string {
 	day := ts / dayNanos
 
-	st, ok := states[service]
+	st, ok := e.states[service]
 
 	if ok && st.day == day {
 		st.endTs = ts
@@ -256,12 +297,12 @@ func currentEvent(ctx context.Context,
 	}
 
 	if ok && st.eventId != "" {
-		endEvent(ctx, client, st.eventId, st.endTs, service)
+		e.endEvent(ctx, st.eventId, st.endTs, service)
 	}
 
 	name := fmt.Sprintf("%s — %s", service, time.Unix(0, ts).UTC().Format("2006-01-02"))
 
-	e := &hippo.Event{
+	ev := &hippo.Event{
 		TimeStart:    ts,
 		Significance: jitterSignificance(12000),
 		Name:         name,
@@ -269,20 +310,35 @@ func currentEvent(ctx context.Context,
 		Group:        service,
 	}
 
-	r, err := client.StoreEvent(ctx, e)
+	if e.links {
+		ev.Links = e.threads.eventLinks(service, day)
+	}
+
+	id, err := link.StoreEvent(ctx, e.client, ev)
 	if err != nil {
 		fmt.Printf("ERROR storing event: %s\n", err.Error())
 
 		return ""
 	}
 
-	states[service] = &serviceState{eventId: r.GetId(), day: day, endTs: ts}
+	if e.links {
+		e.threads.advanceEvent(service, id, day)
+	}
 
-	return r.GetId()
+	e.states[service] = &serviceState{eventId: id, day: day, endTs: ts}
+
+	return id
+}
+
+// closeEvents ends every still-open daily event at the last line it saw.
+func (e *emitter) closeEvents(ctx context.Context) {
+	for service, st := range e.states {
+		e.endEvent(ctx, st.eventId, st.endTs, service)
+	}
 }
 
 // endEvent sets an event's end time, tolerating an empty id (an event whose creation failed).
-func endEvent(ctx context.Context, client hippo.HippocampusClient, eventId string, endTs int64, service string) {
+func (e *emitter) endEvent(ctx context.Context, eventId string, endTs int64, service string) {
 	if eventId == "" {
 		return
 	}
@@ -292,7 +348,7 @@ func endEvent(ctx context.Context, client hippo.HippocampusClient, eventId strin
 		TimeEnd: endTs,
 	}
 
-	if _, err := client.EndEvent(ctx, ee); err != nil {
+	if _, err := e.client.EndEvent(ctx, ee); err != nil {
 		fmt.Printf("ERROR ending event for %s: %s\n", service, err.Error())
 	}
 }
@@ -317,12 +373,14 @@ func pickLevel() level {
 	return levels[len(levels)-1]
 }
 
-// renderMessage fills a random template for the level with a random token.
-func renderMessage(levelName string) string {
+// renderMessage fills a random template for the level with the line's correlation token. The token
+// is chosen by the caller rather than here because it is also the key the request trace is threaded
+// on - the same token in two lines is what says they belong to one request.
+func renderMessage(levelName string, token string) string {
 	templates := messageTemplates[levelName]
 	tmpl := templates[rand.Intn(len(templates))]
 
-	return fmt.Sprintf(tmpl, tokens[rand.Intn(len(tokens))])
+	return fmt.Sprintf(tmpl, token)
 }
 
 // jitterSignificance spreads a base significance by ±1500, clamped to the valid 1..32767 range, so

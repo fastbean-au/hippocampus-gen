@@ -8,23 +8,39 @@ import (
 	"time"
 
 	hippo "github.com/fastbean-au/hippocampus/contract"
+
+	"github.com/fastbean-au/hippocampus-gen/internal/link"
 )
 
-type Generator struct {
-	dict          []string
-	dictByLen     map[int][]string
-	maxWordLength int
-	memoryLength  int
-	client        hippo.HippocampusClient
+// recentSize is how many of a worker's own ids stay eligible as link targets. Big enough that the
+// graph is not a chain of near-neighbours, small enough that the whole run's ids are not held.
+const recentSize = 512
+
+// Config is what a worker needs to generate: the wordlist in both the forms buildPhrase wants, the
+// shape of what it writes, the links it declares, and the client to write through.
+type Config struct {
+	Dict          []string
+	DictByLen     map[int][]string
+	MaxWordLength int
+	MemoryLength  int
+	Links         int
+	Client        hippo.HippocampusClient
 }
 
-func New(dict []string, dictByLen map[int][]string, maxWordLength int, memoryLength int, client hippo.HippocampusClient) *Generator {
+type Generator struct {
+	config Config
+
+	// Ids this worker has stored and can therefore link back to. Per worker rather than shared: the
+	// workers run concurrently, and a link target must already exist when the write naming it lands.
+	events   *link.Recent
+	memories *link.Recent
+}
+
+func New(config Config) *Generator {
 	return &Generator{
-		dict:          dict,
-		dictByLen:     dictByLen,
-		maxWordLength: maxWordLength,
-		memoryLength:  memoryLength,
-		client:        client,
+		config:   config,
+		events:   link.NewRecent(recentSize),
+		memories: link.NewRecent(recentSize),
 	}
 }
 
@@ -43,10 +59,12 @@ func (g *Generator) Execute(eventCount int, eventMemoryCount int, memoryCount in
 
 		e := g.buildEvent(eventMemoryCount)
 
-		_, err := g.client.StoreEvent(ctx, e)
+		id, err := link.StoreEvent(ctx, g.config.Client, e)
 		if err != nil {
 			fmt.Printf("ERROR storing event: %s\n", err.Error())
 		} else {
+			g.events.Add(id)
+
 			i++
 		}
 	}
@@ -59,13 +77,42 @@ func (g *Generator) Execute(eventCount int, eventMemoryCount int, memoryCount in
 		}
 
 		m := g.buildMemory(randomPastTimeNano())
-		_, err := g.client.StoreMemory(ctx, m)
+		m.Links = g.links(g.memories)
+
+		id, err := link.StoreMemory(ctx, g.config.Client, m)
 		if err != nil {
 			fmt.Printf("ERROR storing memory: %s\n", err.Error())
 		} else {
+			g.memories.Add(id)
+
 			i++
 		}
 	}
+}
+
+// links draws up to --links targets at random from ids this worker has already stored. The
+// associations mean nothing - this generator's data means nothing either - but they put a graph of
+// roughly the right shape and density under a load test, which is what exercises the link tables and
+// the damped link contribution in the decay maths.
+//
+// The memories nested inside an event get none: StoreEvent stores them as a batch and reports only
+// how many were retained, so there is no id to link them by or to. Only the standalone memories,
+// stored one at a time, take part.
+func (g *Generator) links(recent *link.Recent) []*hippo.Link {
+	if g.config.Links < 1 {
+
+		return nil
+	}
+
+	ids := recent.Sample(rand.Intn(g.config.Links + 1))
+
+	links := make([]*hippo.Link, 0, len(ids))
+
+	for _, id := range ids {
+		links = append(links, link.New(id, randomSignificance()))
+	}
+
+	return links
 }
 
 func (g *Generator) buildEvent(memCount int) *hippo.Event {
@@ -75,6 +122,7 @@ func (g *Generator) buildEvent(memCount int) *hippo.Event {
 		TimeStart:    randomPastTimeNano(),
 		Name:         g.buildPhrase(32 + rand.Intn(224)),
 		Description:  g.buildPhrase(64 + rand.Intn(960)),
+		Links:        g.links(g.events),
 	}
 
 	// Build memories
@@ -95,14 +143,14 @@ func (g *Generator) buildMemory(lastTimeStamp int64) *hippo.Memory {
 	m := &hippo.Memory{
 		Significance: randomSignificance(),
 		TimeStamp:    lastTimeStamp + rand.Int63n(3600*1000000000),
-		Body:         g.buildPhrase(g.memoryLength),
+		Body:         g.buildPhrase(g.config.MemoryLength),
 	}
 
 	return m
 }
 
 func (g *Generator) buildPhrase(length int) string {
-	wc := len(g.dict)
+	wc := len(g.config.Dict)
 	str := ""
 
 	for {
@@ -110,12 +158,12 @@ func (g *Generator) buildPhrase(length int) string {
 		switch {
 		case r == 0:
 			return str
-		case r <= g.maxWordLength:
-			i := rand.Intn(len(g.dictByLen[r]))
-			str += g.dictByLen[r][i]
+		case r <= g.config.MaxWordLength:
+			i := rand.Intn(len(g.config.DictByLen[r]))
+			str += g.config.DictByLen[r][i]
 		default:
 			i := rand.Intn(wc)
-			str += g.dict[i] + " "
+			str += g.config.Dict[i] + " "
 		}
 	}
 }

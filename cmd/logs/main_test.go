@@ -56,7 +56,7 @@ func TestExecuteOneShot(t *testing.T) {
 
 	// 50 lines across 3 days exercises the back-dated one-shot path, including the per-service daily
 	// event rollover and the close-open-events pass at the end.
-	execute(f, 50, 3)
+	execute(f, 50, 3, true)
 
 	if f.memories != 50 {
 		t.Fatalf("expected 50 memories stored, got %d", f.memories)
@@ -75,19 +75,19 @@ func TestExecuteClampsNonPositiveArgs(t *testing.T) {
 	f := &fakeClient{}
 
 	// Non-positive entries/days are clamped to one, so a single line is still stored.
-	execute(f, 0, 0)
+	execute(f, 0, 0, true)
 
 	if f.memories != 1 {
 		t.Fatalf("expected a single line for clamped args, got %d", f.memories)
 	}
 }
 
-func TestEmitLine(t *testing.T) {
+func TestEmit(t *testing.T) {
 	f := &fakeClient{}
-	states := map[string]*serviceState{}
+	e := newEmitter(f, true)
 
-	if !emitLine(context.Background(), f, states, time.Now().UnixNano(), int64(24*time.Hour)) {
-		t.Fatal("expected emitLine to succeed")
+	if !e.emit(context.Background(), time.Now().UnixNano()) {
+		t.Fatal("expected emit to succeed")
 	}
 
 	if f.memories != 1 {
@@ -98,16 +98,17 @@ func TestEmitLine(t *testing.T) {
 		t.Fatalf("expected 1 event created for the new service/day, got %d", f.events)
 	}
 
-	if len(states) != 1 {
-		t.Fatalf("expected 1 tracked service state, got %d", len(states))
+	if len(e.states) != 1 {
+		t.Fatalf("expected 1 tracked service state, got %d", len(e.states))
 	}
 }
 
-func TestEmitLineReportsStoreError(t *testing.T) {
+func TestEmitReportsStoreError(t *testing.T) {
 	f := &fakeClient{storeErr: fmt.Errorf("boom")}
+	e := newEmitter(f, true)
 
-	if emitLine(context.Background(), f, map[string]*serviceState{}, time.Now().UnixNano(), int64(24*time.Hour)) {
-		t.Fatal("expected emitLine to report a store failure")
+	if e.emit(context.Background(), time.Now().UnixNano()) {
+		t.Fatal("expected emit to report a store failure")
 	}
 }
 
@@ -126,7 +127,7 @@ func TestExecuteLiveStopsAndClosesEvents(t *testing.T) {
 	}
 
 	// A high rate keeps the per-line pacing delay tiny so the test is quick.
-	executeLive(ctx, f, 6000)
+	executeLive(ctx, f, 6000, true)
 
 	if f.memories != 5 {
 		t.Fatalf("expected exactly 5 lines before cancellation, got %d", f.memories)
@@ -149,7 +150,7 @@ func TestExecuteLiveClampsRate(t *testing.T) {
 		cancel()
 	}
 
-	executeLive(ctx, f, 0)
+	executeLive(ctx, f, 0, true)
 
 	if f.memories != 1 {
 		t.Fatalf("expected one line emitted before cancellation, got %d", f.memories)
