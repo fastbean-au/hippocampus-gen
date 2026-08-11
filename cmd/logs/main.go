@@ -80,6 +80,7 @@ func main() {
 	pflag.Int("rate", 60, "with --live, approximate lines per minute to emit")
 	pflag.Duration("duration", 0, "with --live, how long to run before stopping (0 = until interrupted)")
 	pflag.Bool("links", true, "associate lines sharing a correlation token, chain each service's errors and its daily events (--links=false emits them unlinked)")
+	pflag.String("group", "", "group label for every record, overriding the per-service default; set this to the label a group-scoped token carries (the service name is recorded as metadata either way)")
 	client.RegisterAuthFlags(pflag.CommandLine)
 	pflag.Parse()
 
@@ -115,6 +116,12 @@ func main() {
 
 	client := hippo.NewHippocampusClient(conn)
 
+	// All viper reads stay in main; the emitter takes the resolved values.
+	cfg := emitConfig{
+		links: viper.GetBool("links"),
+		group: viper.GetString("group"),
+	}
+
 	if viper.GetBool("live") {
 		// A continuous trickle at the current time: lines age in real wall-clock, and the service's
 		// own sleep cycle plus capacity eviction reap the low-significance noise as the store fills.
@@ -129,12 +136,12 @@ func main() {
 			defer cancel()
 		}
 
-		executeLive(ctx, client, viper.GetInt("rate"), viper.GetBool("links"))
+		executeLive(ctx, client, viper.GetInt("rate"), cfg)
 
 		return
 	}
 
-	execute(client, viper.GetInt("entries"), viper.GetInt("days"), viper.GetBool("links"))
+	execute(client, viper.GetInt("entries"), viper.GetInt("days"), cfg)
 }
 
 // dayNanos is the bucket a line's event is chosen by: one event per service per day.
@@ -161,24 +168,52 @@ type line struct {
 // emitter is everything one run's lines are written through: the client, the open per-service daily
 // events, the association threads, and the line counter those threads age against. A one-shot batch
 // and a live trickle each build one, so they differ only in the timestamps they hand it.
+// emitConfig carries the shaping options both the one-shot and live paths take. It is a struct
+// rather than two more parameters because execute/executeLive already sit at the project's
+// four-parameter limit.
+type emitConfig struct {
+	// links chains lines sharing a correlation token, each service's errors, and its daily events.
+	links bool
+
+	// group overrides the group label stamped on every record. Empty keeps the historical
+	// behaviour - the service name doubles as the group - which is what a store with no group
+	// scoping wants.
+	//
+	// It exists because group is no longer only a label: a service issuing group-scoped tokens
+	// lets a token write only the groups it holds, so service-as-group and a scoped token are
+	// mutually exclusive and every write would be refused. Setting this to the token's own label
+	// resolves that, and the service name survives as metadata regardless (see emit).
+	group string
+}
+
 type emitter struct {
 	client  hippo.HippocampusClient
 	states  map[string]*serviceState
 	threads *threads
-	links   bool
+	cfg     emitConfig
 	seq     int64
 }
 
-func newEmitter(client hippo.HippocampusClient, links bool) *emitter {
+func newEmitter(client hippo.HippocampusClient, cfg emitConfig) *emitter {
 	return &emitter{
 		client:  client,
 		states:  make(map[string]*serviceState, len(services)),
 		threads: newThreads(),
-		links:   links,
+		cfg:     cfg,
 	}
 }
 
-func execute(client hippo.HippocampusClient, entries int, days int, links bool) {
+// groupFor resolves the group label for a service's records: the configured override when there is
+// one, otherwise the service name, which is what this generator has always used.
+func (e *emitter) groupFor(service string) string {
+	if e.cfg.group != "" {
+		return e.cfg.group
+	}
+
+	return service
+}
+
+func execute(client hippo.HippocampusClient, entries int, days int, cfg emitConfig) {
 	ctx := context.Background()
 
 	if entries < 1 {
@@ -196,7 +231,7 @@ func execute(client hippo.HippocampusClient, entries int, days int, links bool) 
 	increment := window / int64(entries)
 	ts := time.Now().Add(-time.Duration(window) - time.Hour).UnixNano()
 
-	e := newEmitter(client, links)
+	e := newEmitter(client, cfg)
 	stored := 0
 
 	for i := 0; i < entries; i++ {
@@ -215,7 +250,7 @@ func execute(client hippo.HippocampusClient, entries int, days int, links bool) 
 // executeLive trickles new lines at the current time until ctx is cancelled (by --duration or a
 // SIGINT/SIGTERM), pacing to roughly rate lines per minute. It never back-dates, so the memories age
 // in real wall-clock and the service's sleep cycle reaps them as they fall below the threshold.
-func executeLive(ctx context.Context, client hippo.HippocampusClient, rate int, links bool) {
+func executeLive(ctx context.Context, client hippo.HippocampusClient, rate int, cfg emitConfig) {
 	if rate < 1 {
 		rate = 1
 	}
@@ -223,7 +258,7 @@ func executeLive(ctx context.Context, client hippo.HippocampusClient, rate int, 
 	// One Wait per line across a one-minute window gives roughly rate lines per minute.
 	pacer := pace.NewPacer(time.Minute, rate)
 
-	e := newEmitter(client, links)
+	e := newEmitter(client, cfg)
 	stored := 0
 
 	fmt.Printf("trickling ~%d log lines/min across %d services (interrupt to stop)\n", rate, len(services))
@@ -260,13 +295,22 @@ func (e *emitter) emit(ctx context.Context, ts int64) bool {
 
 	m := &hippo.Memory{
 		EventId:      e.currentEvent(ctx, l.service, ts),
-		Group:        l.service,
+		Group:        e.groupFor(l.service),
 		Significance: jitterSignificance(l.level.significance),
 		TimeStamp:    ts,
 		Body:         fmt.Sprintf("[%s] %s", l.level.name, renderMessage(l.level.name, l.token)),
+
+		// The service and level go in as metadata as well as (in the default configuration) as the
+		// group. Metadata is where multi-dimensional classification belongs - level could never
+		// have been a group alongside the service - and it is what keeps the service filterable
+		// when --group has taken the group over for access scoping.
+		Metadata: map[string]string{
+			"service": l.service,
+			"level":   l.level.name,
+		},
 	}
 
-	if e.links {
+	if e.cfg.links {
 		m.Links = e.threads.memoryLinks(l)
 	}
 
@@ -275,7 +319,7 @@ func (e *emitter) emit(ctx context.Context, ts int64) bool {
 		fmt.Printf("ERROR storing memory: %s\n", err.Error())
 	}
 
-	if e.links {
+	if e.cfg.links {
 		e.threads.advanceMemory(l, id)
 	}
 
@@ -307,10 +351,15 @@ func (e *emitter) currentEvent(ctx context.Context, service string, ts int64) st
 		Significance: jitterSignificance(12000),
 		Name:         name,
 		Description:  fmt.Sprintf("%s service activity for %s", service, time.Unix(0, ts).UTC().Format("2006-01-02")),
-		Group:        service,
+		Group:        e.groupFor(service),
+
+		Metadata: map[string]string{
+			"service": service,
+			"day":     time.Unix(0, ts).UTC().Format("2006-01-02"),
+		},
 	}
 
-	if e.links {
+	if e.cfg.links {
 		ev.Links = e.threads.eventLinks(service, day)
 	}
 
@@ -321,7 +370,7 @@ func (e *emitter) currentEvent(ctx context.Context, service string, ts int64) st
 		return ""
 	}
 
-	if e.links {
+	if e.cfg.links {
 		e.threads.advanceEvent(service, id, day)
 	}
 

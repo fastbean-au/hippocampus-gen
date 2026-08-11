@@ -1,8 +1,15 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	hippo "github.com/fastbean-au/hippocampus/contract"
 )
 
 func TestFromRoman(t *testing.T) {
@@ -94,5 +101,37 @@ func TestPortionTextIsBounded(t *testing.T) {
 
 	if !strings.Contains(first, "Churchyard") {
 		t.Errorf("first portion is missing expected churchyard text")
+	}
+}
+
+// sleepFailClient refuses Sleep and records whether the pass went on to ask for candidates. It
+// stands in for a group-scoped token, which the service refuses Sleep whatever its tier because the
+// cycle acts on the whole store.
+type sleepFailClient struct {
+	hippo.HippocampusClient
+
+	askedForCandidates bool
+}
+
+func (c *sleepFailClient) Sleep(_ context.Context, _ *hippo.EmptyRequest, _ ...grpc.CallOption) (*hippo.GeneralResponse, error) {
+	return nil, status.Error(codes.PermissionDenied, "Sleep operates on the whole store and is not available to a group-scoped token")
+}
+
+func (c *sleepFailClient) GetSummarisationCandidates(_ context.Context, _ *hippo.EmptyRequest, _ ...grpc.CallOption) (*hippo.GetSummarisationCandidatesResponse, error) {
+	c.askedForCandidates = true
+
+	return &hippo.GetSummarisationCandidatesResponse{}, nil
+}
+
+// TestSummariseContinuesWhenSleepIsRefused pins that the consolidation nudge is an optimisation
+// rather than a precondition. It used to abort the whole pass, which would now make summarisation
+// unavailable to any group-scoped token over a call the pass does not depend on.
+func TestSummariseContinuesWhenSleepIsRefused(t *testing.T) {
+	c := &sleepFailClient{}
+
+	summarize(c)
+
+	if !c.askedForCandidates {
+		t.Error("a refused Sleep aborted the pass; it should warn and carry on with the candidate list as it stands")
 	}
 }

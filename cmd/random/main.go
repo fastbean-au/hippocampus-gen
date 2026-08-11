@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 	"os"
@@ -10,9 +11,10 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/fastbean-au/hippocampus-gen/cmd/random/generator"
+	"github.com/fastbean-au/hippocampus-gen/internal/client"
+	"github.com/fastbean-au/hippocampus-gen/internal/oidc"
 	hippo "github.com/fastbean-au/hippocampus/contract"
 )
 
@@ -34,6 +36,8 @@ func main() {
 	pflag.IntP("workers", "w", 5, "number of workers")
 	pflag.IntP("links", "L", 0, "link each event and each standalone memory to up to this many earlier ones (0 = no links)")
 	pflag.StringP("server_address", "s", "localhost:50051", "address of hippocampus server")
+	pflag.String("group", "", "group label stamped on every record; set this to the label a group-scoped token carries (empty leaves it unset, which lets the service stamp the token's own group)")
+	client.RegisterAuthFlags(pflag.CommandLine)
 	pflag.Parse()
 
 	if err := viper.BindPFlags(pflag.CommandLine); err != nil {
@@ -49,9 +53,26 @@ func main() {
 	}
 
 	// Create the gRPC client
-	var opts = []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	// Build the dial options, adding the bearer-token interceptor when auth is configured. All viper
+	// reads stay here in main; the client package takes the resolved values. Mirrors logs and book -
+	// this generator previously dialled plain gRPC only, and so could not be pointed at any
+	// authenticated instance.
+	opts, err := client.DialOptions(context.Background(), oidc.AuthConfig{
+		Token: viper.GetString("token"),
+		ClientCredentialsConfig: oidc.ClientCredentialsConfig{
+			Issuer:       viper.GetString("oidc-issuer"),
+			TokenURL:     viper.GetString("oidc-token-url"),
+			ClientID:     viper.GetString("oidc-client-id"),
+			ClientSecret: viper.GetString("oidc-client-secret"),
+			Scope:        viper.GetString("oidc-scope"),
+			Audience:     viper.GetString("oidc-audience"),
+		},
+	})
+	if err != nil {
+		fmt.Printf("ERROR: %s\n", err.Error())
+		os.Exit(1)
 	}
+
 	conn, err := grpc.NewClient(viper.GetString("server_address"), opts...)
 	if err != nil {
 		fmt.Printf("ERROR: %s\n", err.Error())
@@ -106,6 +127,7 @@ func main() {
 				MemoryLength:  memoryLength,
 				Links:         links,
 				Client:        client,
+				Group:         viper.GetString("group"),
 			})
 
 			g.Execute(epw, mpe, mpw, &wg)

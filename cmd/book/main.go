@@ -43,6 +43,7 @@ func main() {
 	pflag.Duration("pace-window", 0, "spread each load across this wall-clock window instead of bursting (0 = burst)")
 	pflag.Bool("live", false, "stamp writes at the current time so they age in real time, instead of back-dating across the book's timeline")
 	pflag.Bool("links", true, "associate paragraphs that name the same character, and each chapter with the one before it (--links=false loads them unlinked)")
+	pflag.String("group", "", "group label stamped on every record; set this to the label a group-scoped token carries (empty leaves it unset, which lets the service stamp the token's own group)")
 	client.RegisterAuthFlags(pflag.CommandLine)
 	pflag.Parse()
 
@@ -92,6 +93,7 @@ func main() {
 		live:       viper.GetBool("live"),
 		paceWindow: viper.GetDuration("pace-window"),
 		links:      viper.GetBool("links"),
+		group:      viper.GetString("group"),
 	}
 
 	reset := viper.GetBool("reset")
@@ -147,6 +149,12 @@ type loadOptions struct {
 	live       bool
 	paceWindow time.Duration
 	links      bool
+
+	// group is stamped on every record. Empty leaves it unset, which is both the historical
+	// behaviour and the right default under group scoping: a scoped token writing no group has the
+	// service fill in its own, so this only has to be set when a token carries several groups (the
+	// service cannot choose between them) or when the data should be filed under a specific label.
+	group string
 }
 
 // execute streams the book: an event per chapter, a memory per paragraph. It returns ctx.Err() if
@@ -202,6 +210,7 @@ func execute(ctx context.Context, client hippo.HippocampusClient, opts loadOptio
 					Significance: randomSignificance(),
 					TimeStamp:    ts,
 					Body:         memory,
+					Group:        opts.group,
 				}
 
 				// The paragraph's cast decides both what it links back to and which threads it
@@ -255,6 +264,7 @@ func execute(ctx context.Context, client hippo.HippocampusClient, opts loadOptio
 					Significance: randomSignificance(),
 					Name:         line,
 					Description:  line,
+					Group:        opts.group,
 				}
 
 				if opts.links && eventId != "" {

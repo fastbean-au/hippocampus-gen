@@ -2,7 +2,7 @@
 
 Test data generator for Hippocampus. These programs will create sample or test data for use with the [Hippocampus](https://github.com/fastbean-au/hippocampus) service.
 
-The module builds against the published `github.com/fastbean-au/hippocampus` contract (currently `v0.14.1`). Because that module is private, set `GOPRIVATE=github.com/fastbean-au/*` so `go` fetches it directly rather than through the public proxy and checksum database. Each generator takes `-s <host:port>` for the target gRPC address (default `localhost:50051`). By default they speak plain, unauthenticated gRPC; see [Authentication](#authentication) to drive a service that requires a bearer token. See the service's [Demonstrations](https://github.com/fastbean-au/hippocampus/blob/main/docs/demonstrations.md) guide for worked end-to-end examples in embedded and centralised modes.
+The module builds against the published `github.com/fastbean-au/hippocampus` contract (the version pinned in `go.mod`). Because that module is private, set `GOPRIVATE=github.com/fastbean-au/*` so `go` fetches it directly rather than through the public proxy and checksum database. Each generator takes `-s <host:port>` for the target gRPC address (default `localhost:50051`). By default they speak plain, unauthenticated gRPC; see [Authentication](#authentication) to drive a service that requires a bearer token. See the service's [Demonstrations](https://github.com/fastbean-au/hippocampus/blob/main/docs/demonstrations.md) guide for worked end-to-end examples in embedded and centralised modes.
 
 ## Authentication
 
@@ -25,6 +25,22 @@ go run ./cmd/book -s localhost:50051 --summarize \
   --oidc-client-id hippocampus-gen --oidc-client-secret "$SECRET" \
   --oidc-audience https://api.hippocampus.demo
 ```
+
+## Group scoping
+
+If the target service issues [group-scoped tokens](https://github.com/fastbean-au/hippocampus/blob/main/docs/configuration.md#group-scoping), a token may write only the group labels it holds. Every generator takes `--group` for this:
+
+```bash
+# a token scoped to "demo": file everything under that label
+go run ./cmd/logs -s localhost:50051 -n 3000 -d 20 --group demo --token "$SCOPED_TOKEN"
+```
+
+**`logs` needs it; `book` and `random` usually do not.** The logs generator stamps each line's *service* as its group by default, so against a scoped token every write is refused with `PermissionDenied` — `--group` is what resolves that, and the service is recorded as `metadata` either way, so it stays filterable (`?metadata=service%3Dauth`). The other two leave the group unset, which a scoped token handles by itself: the service stamps the token's own group. Set `--group` there only when the token carries **several** groups (the service cannot choose between them) or when the data should be filed under a specific label.
+
+Two calls act on the whole store and are refused to a scoped token whatever its tier: `Sleep` and `Purge`. So:
+
+- `book --summarize` nudges a consolidation cycle before asking for candidates. Under a scoped token that nudge is refused; the pass **warns and carries on** with the candidate list as it stands, since the cycle is an optimisation rather than a precondition.
+- `book --reset` purges the store, and needs an **unscoped** admin token.
 
 ## Random
 
@@ -86,7 +102,7 @@ go run cmd/book/main.go -s localhost:50051 \
 
 ## Logs
 
-A log-shaped generator: each synthetic log line becomes a memory whose significance is derived from the line's **level** (`DEBUG` lowest … `FATAL` highest), tagged with its emitting **service** via the `group` label, with lines grouped into one **event per service per day**. It is the demonstration that makes significance-driven forgetting concrete — after a sleep cycle, routine `DEBUG`/`INFO` noise is consolidated away first while `ERROR`/`FATAL` lines survive.
+A log-shaped generator: each synthetic log line becomes a memory whose significance is derived from the line's **level** (`DEBUG` lowest … `FATAL` highest), tagged with its emitting **service** and level as `metadata` (and, by default, with the service as the `group` label too), with lines grouped into one **event per service per day**. It is the demonstration that makes significance-driven forgetting concrete — after a sleep cycle, routine `DEBUG`/`INFO` noise is consolidated away first while `ERROR`/`FATAL` lines survive.
 
 ### Usage example
 

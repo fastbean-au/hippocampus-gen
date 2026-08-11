@@ -25,6 +25,12 @@ type Config struct {
 	MemoryLength  int
 	Links         int
 	Client        hippo.HippocampusClient
+
+	// Group is stamped on every record. Empty leaves it unset, which is both the historical
+	// behaviour and what a group-scoped token wants: writing no group has the service fill in the
+	// token's own. It only needs setting when a token carries several groups (the service cannot
+	// choose between them) or when the data should be filed under a specific label.
+	Group string
 }
 
 type Generator struct {
@@ -123,6 +129,7 @@ func (g *Generator) buildEvent(memCount int) *hippo.Event {
 		Name:         g.buildPhrase(32 + rand.Intn(224)),
 		Description:  g.buildPhrase(64 + rand.Intn(960)),
 		Links:        g.links(g.events),
+		Group:        g.config.Group,
 	}
 
 	// Build memories
@@ -144,6 +151,7 @@ func (g *Generator) buildMemory(lastTimeStamp int64) *hippo.Memory {
 		Significance: randomSignificance(),
 		TimeStamp:    lastTimeStamp + rand.Int63n(3600*1000000000),
 		Body:         g.buildPhrase(g.config.MemoryLength),
+		Group:        g.config.Group,
 	}
 
 	return m

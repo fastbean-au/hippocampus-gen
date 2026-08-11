@@ -53,10 +53,15 @@ func summarize(client hippo.HippocampusClient) {
 
 	// Trigger a consolidation cycle now so the candidate list reflects the book we just loaded
 	// rather than a stale snapshot from an earlier cycle.
+	//
+	// A failure here is a warning, not the end of the pass. The cycle is an optimisation - it makes
+	// the candidate list current - and the list is still worth asking for without it. Sleep is also
+	// the one call here a group-scoped token cannot make (it acts on the whole store, so the service
+	// refuses it whatever the tier), and aborting would have made the whole summarisation pass
+	// unavailable to a scoped token over a call it does not actually depend on. If the service is
+	// genuinely unreachable, the next call says so.
 	if _, err := client.Sleep(ctx, &hippo.EmptyRequest{}); err != nil {
-		fmt.Printf("ERROR triggering sleep: %s\n", err.Error())
-
-		return
+		fmt.Printf("WARNING could not trigger a consolidation cycle, continuing with the candidate list as it stands: %s\n", err.Error())
 	}
 
 	resp, err := client.GetSummarisationCandidates(ctx, &hippo.EmptyRequest{})
