@@ -161,6 +161,33 @@ sessions and 28 days. **The corpus is private working data and does not ship; th
 do**, which is what makes the benchmark auditable — the file records what it was fitted from and
 when, and carries no paths or content, only aggregate statistics.
 
+### `agent` — replaying and scoring
+
+`cmd/agent` generates the workload from those parameters, replays it into a live instance in
+compressed simulated time, and scores what survived against the standard cache-replacement baselines
+at the same store size.
+
+```sh
+# Describe the workload without touching a service
+go run ./cmd/agent --dry-run --memories 20000 --days 60
+
+# Replay it into an instance and score the result
+go run ./cmd/agent -s localhost:50051 --memories 20000 --days 60 \
+  --sim-days-per-wall-minute 40 --out results.json
+```
+
+The instance needs `consolidation.unitsOfAgeInDays` matched to the replay speed; the harness reads
+the setting back before starting and refuses a run that would measure a decay rate nobody chose,
+naming the value to use. An optional `--control_address` points at a second, unbounded instance,
+which serves as both the keep-everything ceiling and the search oracle the simulated baselines are
+ranked from.
+
+Results are reported for **two question kinds separately** — _next-touch_ ("what will be looked up
+next", drawn from the reuse process) and _must-keep_ ("what matters regardless of access", drawn by
+importance) — because averaging them hides which one a policy is bad at. The service-side write-up,
+with the headline numbers and the limitations, is
+[Retention quality](https://github.com/fastbean-au/hippocampus/blob/main/docs/retention.md).
+
 ### Why reuse is fitted as two modes
 
 The single most important measurement is that re-reference is **bimodal**:
