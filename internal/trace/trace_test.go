@@ -1,15 +1,14 @@
 package trace
 
 import (
-	"encoding/json"
 	"math"
 	"math/rand"
-	"os"
 	"sort"
 	"testing"
 	"time"
 
 	"github.com/fastbean-au/hippocampus-gen/internal/fit"
+	"github.com/fastbean-au/hippocampus-gen/internal/params"
 )
 
 // loadParams reads the committed parameter file, so the tests exercise the generator against the
@@ -17,15 +16,9 @@ import (
 func loadParams(t *testing.T) fit.Params {
 	t.Helper()
 
-	data, err := os.ReadFile("../../data/params.json")
+	out, err := params.Default()
 	if err != nil {
-		t.Fatalf("reading params: %v", err)
-	}
-
-	var out fit.Params
-
-	if err := json.Unmarshal(data, &out); err != nil {
-		t.Fatalf("parsing params: %v", err)
+		t.Fatalf("loading params: %v", err)
 	}
 
 	return out

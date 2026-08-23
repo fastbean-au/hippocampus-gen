@@ -40,6 +40,7 @@ import (
 	"github.com/fastbean-au/hippocampus-gen/internal/client"
 	"github.com/fastbean-au/hippocampus-gen/internal/fit"
 	"github.com/fastbean-au/hippocampus-gen/internal/oidc"
+	"github.com/fastbean-au/hippocampus-gen/internal/params"
 	"github.com/fastbean-au/hippocampus-gen/internal/replay"
 	"github.com/fastbean-au/hippocampus-gen/internal/score"
 	"github.com/fastbean-au/hippocampus-gen/internal/trace"
@@ -64,7 +65,7 @@ func main() {
 func registerFlags() {
 	pflag.StringP("server_address", "s", "localhost:50051", "the bounded instance under test")
 	pflag.String("control_address", "", "an unbounded control instance, the ceiling arm and search oracle (empty runs without one)")
-	pflag.String("params", "data/params.json", "the fitted parameter file (see cmd/agentfit)")
+	pflag.String("params", "", "a fitted parameter file (see cmd/agentfit); empty uses the committed parameters compiled into the binary")
 
 	pflag.Int("memories", 20000, "how many memories the trace stores")
 	pflag.Float64("days", 60, "simulated days the trace spans")
@@ -97,6 +98,10 @@ func registerFlags() {
 	pflag.String("curve", "", "comma-separated store sizes (as fractions, e.g. 0.05,0.1,0.2,0.4) to score every baseline at")
 	pflag.Int("oracle-depth", 200, "how deep to rank each question; wants to be several times --top-k")
 
+	pflag.Bool("live", false, "run continuously as a demonstration writer: generate a trace, replay it, generate the next, forever. No scoring, no control instance.")
+	pflag.String("flat-address", "", "with --live, a second instance receiving byte-for-byte identical memories but a CONSTANT significance - the same workload stored by a deployment that never sets one")
+	pflag.Int32("flat-significance", 10000, "the constant significance written to --flat-address")
+
 	pflag.String("out", "", "write the result JSON here (empty prints the table only)")
 	pflag.Bool("dry-run", false, "generate and describe the trace without contacting any service")
 	pflag.Bool("force", false, "run even if the instance's decay clock disagrees with the replay speed")
@@ -109,6 +114,11 @@ func run(ctx context.Context) error {
 	if err != nil {
 
 		return err
+	}
+
+	if viper.GetBool("live") {
+
+		return runLive(ctx, params)
 	}
 
 	tr, err := trace.Generate(traceConfig(params))
@@ -181,6 +191,121 @@ func run(ctx context.Context) error {
 	return write(viper.GetString("out"), tr, results, curves)
 }
 
+// runLive drives an endless workload into one or two instances, for a hosted demonstration rather
+// than a measurement. It never scores, never reads survivors back, and never needs a control.
+//
+// Each pass generates a fresh trace and replays it; the pass number becomes the trace's id prefix,
+// because ids are assigned from an index and a second trace would otherwise reuse the first's -
+// turning every write into an update and leaving the store's size flat forever.
+//
+// With --flat-address the same memories go to a second instance with a constant significance. Both
+// stores then hold byte-for-byte identical bodies, ids, events and links, arriving at the same
+// moments and recalled at the same moments; the ONLY difference between them is whether anything
+// ever said which memories mattered. That is the comparison worth showing, and it needs one writer
+// rather than two so the two workloads cannot drift apart.
+func runLive(ctx context.Context, params fit.Params) error {
+	primary, err := dial(ctx, viper.GetString("server_address"))
+	if err != nil {
+
+		return err
+	}
+
+	defer primary.close()
+
+	var flat *connection
+
+	if address := viper.GetString("flat-address"); address != "" {
+		if flat, err = dial(ctx, address); err != nil {
+
+			return err
+		}
+
+		defer flat.close()
+	}
+
+	cfg := replay.Config{
+		SimDaysPerWallMinute: viper.GetFloat64("sim-days-per-wall-minute"),
+		Workers:              viper.GetInt("workers"),
+		Tick:                 viper.GetDuration("tick"),
+		Group:                viper.GetString("group"),
+		Events:               viper.GetBool("events"),
+	}
+
+	if _, err := replay.New(primary.client, &trace.Trace{}, cfg).Verify(ctx); err != nil && !viper.GetBool("force") {
+
+		return fmt.Errorf("%w\n\nset consolidation.unitsOfAgeInDays to %.9g, or pass --force to run anyway",
+			err, cfg.RequiredUnitsOfAgeInDays())
+	}
+
+	for pass := 0; ; pass++ {
+		if ctx.Err() != nil {
+
+			return nil
+		}
+
+		tc := traceConfig(params)
+		tc.Seed = viper.GetInt64("seed") + int64(pass)
+		tc.IDPrefix = fmt.Sprintf("p%03d-", pass)
+
+		tr, err := trace.Generate(tc)
+		if err != nil {
+
+			return fmt.Errorf("generating pass %d: %w", pass, err)
+		}
+
+		fmt.Printf("pass %d: %d memories over %.0f simulated days (%s)\n",
+			pass, len(tr.Memories), tr.End.Sub(tr.Start).Hours()/24,
+			replay.New(primary.client, tr, cfg).Duration())
+
+		if err := livePass(ctx, tr, cfg, primary, flat); err != nil {
+			if ctx.Err() != nil {
+
+				return nil
+			}
+
+			// A demonstration writer outlives transient failures rather than exiting and taking the
+			// store's only source of new memories with it - which is precisely the outage that goes
+			// unnoticed for hours.
+			fmt.Printf("pass %d failed, continuing: %s\n", pass, err.Error())
+		}
+	}
+}
+
+// livePass replays one generated trace into both instances at once.
+func livePass(ctx context.Context, tr *trace.Trace, cfg replay.Config, primary *connection, flat *connection) error {
+	done := make(chan error, 1)
+
+	if flat != nil {
+		flatCfg := cfg
+		flatCfg.FlatSignificance = viper.GetInt32("flat-significance")
+
+		go func() {
+			_, err := replay.New(flat.client, tr, flatCfg).Run(ctx)
+			done <- err
+		}()
+	}
+
+	stats, err := replay.New(primary.client, tr, cfg).Run(ctx)
+	if err != nil {
+
+		return fmt.Errorf("primary: %w", err)
+	}
+
+	fmt.Printf("  stored %d, recalled %d, links %d\n", stats.Stored, stats.Recalled, stats.Links)
+
+	if flat == nil {
+
+		return nil
+	}
+
+	if err := <-done; err != nil {
+
+		return fmt.Errorf("flat: %w", err)
+	}
+
+	return nil
+}
+
 // connection pairs a dialled client with the connection to close.
 type connection struct {
 	client replay.Client
@@ -236,6 +361,11 @@ func dialControl(ctx context.Context) (*connection, error) {
 }
 
 func loadParams(path string) (fit.Params, error) {
+	if path == "" {
+
+		return params.Default()
+	}
+
 	var out fit.Params
 
 	data, err := os.ReadFile(path)

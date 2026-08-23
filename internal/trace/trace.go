@@ -184,6 +184,11 @@ type Config struct {
 	// which is the shape the decay model implicitly expects.
 	SignificanceScale SignificanceScale
 
+	// IDPrefix is prepended to every generated memory and session id. A single run leaves it empty;
+	// a long-running writer that generates trace after trace must set it per generation, or the
+	// second trace's ids collide with the first's and every write becomes an update.
+	IDPrefix string
+
 	MinSignificance int32
 	MaxSignificance int32
 	BodyBytes       int
@@ -510,7 +515,7 @@ func (t *Trace) buildMemories(rng *rand.Rand, refs []reference) {
 		m.Entity = i
 		m.Agent = t.agentFor(i)
 		m.Group = fmt.Sprintf("agent-%02d", m.Agent)
-		m.ID = fmt.Sprintf("mem-%08d", i)
+		m.ID = fmt.Sprintf("%smem-%08d", t.Config.IDPrefix, i)
 		m.Token = token(i)
 		m.Terms = t.terms(rng, i)
 		m.Body = body(m.Terms, m.Token, t.Config.BodyBytes)
@@ -637,7 +642,7 @@ func (t *Trace) buildSessions(refs []reference) {
 			id := len(t.Sessions)
 
 			t.Sessions = append(t.Sessions, Session{
-				ID:    fmt.Sprintf("session-%06d", id),
+				ID:    fmt.Sprintf("%ssession-%06d", t.Config.IDPrefix, id),
 				Agent: agent,
 				Group: fmt.Sprintf("agent-%02d", agent),
 				Start: refs[indices[i]].at,

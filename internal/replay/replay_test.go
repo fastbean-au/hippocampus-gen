@@ -2,9 +2,7 @@ package replay
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -15,7 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"github.com/fastbean-au/hippocampus-gen/internal/fit"
+	"github.com/fastbean-au/hippocampus-gen/internal/params"
 	"github.com/fastbean-au/hippocampus-gen/internal/trace"
 )
 
@@ -152,19 +150,13 @@ func (c *fakeClient) SearchMemories(_ context.Context, in *hippo.SearchMemoriesR
 func testTrace(t *testing.T, memories int) *trace.Trace {
 	t.Helper()
 
-	data, err := os.ReadFile("../../data/params.json")
+	fitted, err := params.Default()
 	if err != nil {
-		t.Fatalf("reading params: %v", err)
-	}
-
-	var params fit.Params
-
-	if err := json.Unmarshal(data, &params); err != nil {
-		t.Fatalf("parsing params: %v", err)
+		t.Fatalf("loading params: %v", err)
 	}
 
 	tr, err := trace.Generate(trace.Config{
-		Params:               params,
+		Params:               fitted,
 		Seed:                 7,
 		Memories:             memories,
 		Days:                 30,

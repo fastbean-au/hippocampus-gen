@@ -73,6 +73,15 @@ type Config struct {
 	// without their scoring sets colliding.
 	Group string
 
+	// FlatSignificance, when positive, replaces every memory's own significance with this one value.
+	//
+	// It exists for the side-by-side demonstration: two stores fed byte-for-byte identical memories,
+	// one told what matters and one not. It is not a crippled mode - it is the ordinary case of a
+	// deployment that never sets significance, and with a constant significance the decay ordering
+	// reduces to pure recency, since every method divides significance by a function of age. So the
+	// flat store IS an LRU store, arrived at by configuration rather than by a different algorithm.
+	FlatSignificance int32
+
 	// Events writes one event per session and files each memory under it. Off makes every memory
 	// event-less, which is a materially different decay regime - an event contributes its own
 	// significance to its memories' value.
@@ -444,9 +453,15 @@ func (r *Replay) storeWave(ctx context.Context, memories []int) error {
 
 			links, lost := r.linksFor(m)
 
+			significance := m.Significance
+
+			if r.cfg.FlatSignificance > 0 {
+				significance = r.cfg.FlatSignificance
+			}
+
 			in := &hippo.Memory{
 				Id:           m.ID,
-				Significance: m.Significance,
+				Significance: significance,
 				Body:         m.Body,
 				Group:        r.cfg.Group + m.Group,
 				Links:        links,

@@ -31,7 +31,7 @@ func main() {
 	pflag.StringP("transcripts", "t", "", "directory of .jsonl agent session transcripts (required)")
 	pflag.String("entity-prefix", "", "keep only referenced paths containing this substring (empty keeps all)")
 	pflag.String("describe", "", "human description of the corpus, recorded in the parameter file")
-	pflag.StringP("out", "o", "", "write the parameter file here (empty writes to stdout)")
+	pflag.StringP("out", "o", "", "write the parameter file here (empty writes to stdout; the committed copy is internal/params/params.json)")
 	pflag.Parse()
 
 	if err := viper.BindPFlags(pflag.CommandLine); err != nil {

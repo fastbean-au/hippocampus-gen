@@ -148,7 +148,7 @@ go run ./cmd/agentfit \
   --transcripts ~/.claude/projects/-Users-me-src-myproject \
   --entity-prefix /myproject \
   --describe "myproject, Claude Code sessions" \
-  --out data/params.json
+  --out internal/params/params.json
 ```
 
 It reads Claude Code `.jsonl` transcripts, treats each path a tool call names as an _entity_, and
@@ -156,8 +156,9 @@ fits: the Zipf exponent over entity popularity, the once-only share, the session
 within-session co-occurrence (which becomes the link graph), and — the part that matters — the
 **re-reference gap distribution**.
 
-The committed [`data/params.json`](data/params.json) was fitted from 3,274 references across 77
-sessions and 28 days. **The corpus is private working data and does not ship; the fitted parameters
+The committed [`internal/params/params.json`](internal/params/params.json) was fitted from 3,274
+references across 77 sessions and 28 days, and is **compiled into the `agent` binary**, so the
+container image needs no data files and `--params` is only for overriding it. **The corpus is private working data and does not ship; the fitted parameters
 do**, which is what makes the benchmark auditable — the file records what it was fitted from and
 when, and carries no paths or content, only aggregate statistics.
 
