@@ -1,0 +1,7 @@
+{"type":"mode","mode":"normal","sessionId":"sess-a"}
+{"timestamp":"2026-01-01T00:00:00Z","sessionId":"sess-a","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","input":{"file_path":"/proj/a.go"}}]}}
+{"timestamp":"2026-01-01T00:00:10Z","sessionId":"sess-a","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","input":{"file_path":"/proj/b.go"}}]}}
+{"timestamp":"2026-01-01T00:00:20Z","sessionId":"sess-a","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","input":{"file_path":"/proj/a.go"}}]}}
+{"timestamp":"2026-01-01T00:00:25Z","sessionId":"sess-a","type":"user","message":{"role":"user","content":"carry on"}}
+{"timestamp":"2026-01-01T00:00:30Z","sessionId":"sess-a","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"thinking out loud"}]}}
+this line is not json and must be skipped

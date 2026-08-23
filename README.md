@@ -35,7 +35,7 @@ If the target service issues [group-scoped tokens](https://github.com/fastbean-a
 go run ./cmd/logs -s localhost:50051 -n 3000 -d 20 --group demo --token "$SCOPED_TOKEN"
 ```
 
-**`logs` needs it; `book` and `random` usually do not.** The logs generator stamps each line's *service* as its group by default, so against a scoped token every write is refused with `PermissionDenied` — `--group` is what resolves that, and the service is recorded as `metadata` either way, so it stays filterable (`?metadata=service%3Dauth`). The other two leave the group unset, which a scoped token handles by itself: the service stamps the token's own group. Set `--group` there only when the token carries **several** groups (the service cannot choose between them) or when the data should be filed under a specific label.
+**`logs` needs it; `book` and `random` usually do not.** The logs generator stamps each line's _service_ as its group by default, so against a scoped token every write is refused with `PermissionDenied` — `--group` is what resolves that, and the service is recorded as `metadata` either way, so it stays filterable (`?metadata=service%3Dauth`). The other two leave the group unset, which a scoped token handles by itself: the service stamps the token's own group. Set `--group` there only when the token carries **several** groups (the service cannot choose between them) or when the data should be filed under a specific label.
 
 Two calls act on the whole store and are refused to a scoped token whatever its tier: `Sleep` and `Purge`. So:
 
@@ -85,10 +85,10 @@ go run cmd/book/main.go --summarize
 
 ### Live, paced, and looping (the 24-hour showcase)
 
-By default the book is laid across a back-dated timeline and streamed in a burst. For a hosted showcase that *creates over time → summarises → decays*, and repeats each day, these flags reshape the run:
+By default the book is laid across a back-dated timeline and streamed in a burst. For a hosted showcase that _creates over time → summarises → decays_, and repeats each day, these flags reshape the run:
 
 - `--live` — stamp each write at the current time instead of back-dating, so the memories age in real wall-clock (and, with a compressed decay clock on the service, ripen for consolidation and summarisation within the run).
-- `--pace-window <dur>` — spread the load across this window rather than bursting it, so events and memories appear *over time* (e.g. `--pace-window 2h`).
+- `--pace-window <dur>` — spread the load across this window rather than bursting it, so events and memories appear _over time_ (e.g. `--pace-window 2h`).
 - `--loop` with `--period <dur>` (default `24h`) — run continuously, one cycle per period, until interrupted (Ctrl-C / SIGTERM stops it promptly, even mid-load).
 - `--reset` — purge the store at the start of each cycle, for a clean, deterministic reload each period. Purge is admin-tier, so this needs an **admin** token (see [Authentication](#authentication)).
 
@@ -126,3 +126,63 @@ go run cmd/logs/main.go -s localhost:50051 --live --rate 120 \
 ```
 
 The one-shot `-n`/`-d` flags are ignored under `--live`. There is no `--reset` here (unlike the book) — the point is a long-lived, ever-forgetting store, not a clean reload.
+
+## Agent — the retention benchmark
+
+The other three generators load data and let you watch consolidation act on it. This one asks a
+different question, and it is the only one that produces a **number**: _of everything the store threw
+away, how much did you actually need later?_
+
+Stated that way, a forgetting store is a **cache replacement policy**, and cache replacement has a
+settled way of being evaluated — replay a trace, then measure the hit rate against store size,
+against baselines. That is what this is.
+
+### `agentfit` — fitting the trace to a real agent
+
+A benchmark whose author writes both the trace _and_ the ground truth proves nothing. So the
+synthetic trace is built to reproduce a reuse distribution **measured from a real agent's session
+transcripts** rather than one chosen to flatter the result.
+
+```sh
+go run ./cmd/agentfit \
+  --transcripts ~/.claude/projects/-Users-me-src-myproject \
+  --entity-prefix /myproject \
+  --describe "myproject, Claude Code sessions" \
+  --out data/params.json
+```
+
+It reads Claude Code `.jsonl` transcripts, treats each path a tool call names as an _entity_, and
+fits: the Zipf exponent over entity popularity, the once-only share, the session arrival process,
+within-session co-occurrence (which becomes the link graph), and — the part that matters — the
+**re-reference gap distribution**.
+
+The committed [`data/params.json`](data/params.json) was fitted from 3,274 references across 77
+sessions and 28 days. **The corpus is private working data and does not ship; the fitted parameters
+do**, which is what makes the benchmark auditable — the file records what it was fitted from and
+when, and carries no paths or content, only aggregate statistics.
+
+### Why reuse is fitted as two modes
+
+The single most important measurement is that re-reference is **bimodal**:
+
+|                 | share of reuses | median gap |
+| --------------- | --------------- | ---------- |
+| same session    | 73%             | 11 seconds |
+| a later session | 27%             | 17 hours   |
+
+An agent re-reads something seconds later far more often than it returns to it days later — but the
+second mode is the one a bounded store is judged on. **11.5% of reuses landed more than 24 hours
+later and 3.2% more than a week later**, and a third of all entities were never referenced again at
+all. A recency window sized for the burst discards precisely what is wanted next week; that gap is
+the thing the benchmark measures.
+
+The two modes are therefore fitted **separately**, split by whether the re-reference fell in the same
+session — an observation rather than a chosen gap threshold — and never smoothed into one
+distribution.
+
+Each is stored two ways: as a log-normal summary, which is what a person reads, and as an empirical
+inverse-CDF ladder, which is what the generator samples. Both are kept because the parametric fit
+does not survive contact with the corpus — the cross-session mode's fitted parameters imply a 5.7
+hour median against an observed 17, since that mode is itself a mixture of overlapping sessions and
+genuine multi-day returns. The ladder is authoritative; the log-normal is commentary, and comparing
+the two is how a badly-fitting mode announces itself.

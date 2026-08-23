@@ -1,0 +1,2 @@
+{"timestamp":"2026-01-03T00:00:00Z","sessionId":"sess-b","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","input":{"file_path":"/proj/a.go"}}]}}
+{"timestamp":"2026-01-03T00:00:30Z","sessionId":"sess-b","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","input":{"path":"/other/c.go"}}]}}
