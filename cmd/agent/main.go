@@ -82,7 +82,7 @@ func registerFlags() {
 	pflag.Int("memories-per-term", 100, "average memories sharing any one term; lower makes a term more discriminating")
 	pflag.Int("query-terms", 3, "terms a question asks with")
 
-	pflag.String("significance-scale", "linear", "how the latent signal maps onto significance: 'linear' or 'log' (geometric, so log(significance) is even - the shape the decay model implicitly expects)")
+	pflag.String("significance-scale", "log", "how the latent signal maps onto significance: 'log' (geometric, the default, and what docs/consolidation.md recommends since every decay method compares significance as a ratio) or 'linear' (evenly spread, which the store's own maths then compresses at the top)")
 	pflag.Int32("min-significance", 1000, "significance floor")
 	pflag.Int32("max-significance", 30000, "significance ceiling")
 	pflag.Int("body-bytes", 256, "approximate memory body size")
