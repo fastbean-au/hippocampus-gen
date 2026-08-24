@@ -214,3 +214,34 @@ does not survive contact with the corpus — the cross-session mode's fitted par
 hour median against an observed 17, since that mode is itself a mixture of overlapping sessions and
 genuine multi-day returns. The ladder is authoritative; the log-normal is commentary, and comparing
 the two is how a badly-fitting mode announces itself.
+
+## Observer — an agent that chooses what matters
+
+`cmd/observer` is a small LLM-backed agent whose only memory is Hippocampus. Each cycle it reads what
+is new in a source store, **recalls what it already concluded** from its own, asks a local model for
+one observation and how much that observation matters, and stores the result at a significance
+derived from that judgement.
+
+```sh
+go run ./cmd/observer \
+  -s localhost:50056 --source-address localhost:50053 \
+  --ollama-url http://localhost:11434 --model qwen2.5:3b --interval 2m
+```
+
+It is the write side of what the retention benchmark models synthetically: that benchmark _assumes_ a
+deployment able to say something useful about a memory as it writes it, and this is an agent actually
+doing that.
+
+Three things worth knowing:
+
+- **The five rating bands map onto significance geometrically** (1,000 / 3,000 / 9,000 / 27,000 /
+  81,000). Every decay method divides significance by a function of age, so significance is compared
+  as a ratio; evenly spaced values would leave the notes the agent judged most important the ones the
+  store could least tell apart.
+- **The model's reply is a suggestion, not a contract.** A small model asked for a fixed shape will
+  sometimes not produce it, so the parser accepts reordered fields, markdown decoration and leading
+  chatter, and falls back to the middle band when no rating is given. `internal/observer` holds all
+  of that, and is tested against the shapes a small model actually returns.
+- **A local model is the point, not a compromise.** An agent whose notes cost money per cycle is not
+  something to leave running; five bands of importance are within a small model's reach in a way that
+  good prose is not.
