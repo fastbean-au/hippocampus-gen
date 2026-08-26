@@ -276,9 +276,11 @@ func (a *agent) store(ctx context.Context, out observer.Observation) error {
 	}
 
 	// The material is in another store, so it cannot be linked to - recorded instead, so a note can
-	// still be traced to what formed it.
-	if len(out.Sources) > 0 {
-		metadata["sources"] = strings.Join(out.Sources, " ")
+	// still be traced to what formed it. Bounded, because the contract caps a metadata VALUE at 512
+	// bytes and eight ids comfortably exceed that: unbounded, the store refused the write and the
+	// whole cycle - including the generation it had just paid for - was thrown away.
+	if joined := boundedSources(out.Sources); joined != "" {
+		metadata["sources"] = joined
 	}
 
 	resp, err := a.own.StoreMemory(ctx, &hippo.Memory{
@@ -301,6 +303,36 @@ func (a *agent) store(ctx context.Context, out observer.Observation) error {
 	fmt.Printf("rating %d (significance %d): %s\n", out.Rating, significance, out.Note)
 
 	return nil
+}
+
+// maxMetadataValueBytes mirrors the contract's per-value metadata cap (types.MaxMetadataBytes).
+const maxMetadataValueBytes = 512
+
+// boundedSources joins as many source ids as fit the metadata cap, whole ids only. Recording some
+// of what formed a note is worth having; losing the note because the list was too long is not.
+func boundedSources(ids []string) string {
+	var b strings.Builder
+
+	for _, id := range ids {
+		next := len(id)
+
+		if b.Len() > 0 {
+			next++
+		}
+
+		if b.Len()+next > maxMetadataValueBytes {
+
+			break
+		}
+
+		if b.Len() > 0 {
+			b.WriteString(" ")
+		}
+
+		b.WriteString(id)
+	}
+
+	return b.String()
 }
 
 // generate is a direct call to Ollama's completion endpoint. Hand-rolled for the same reason the
