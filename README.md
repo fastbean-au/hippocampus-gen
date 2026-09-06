@@ -215,6 +215,46 @@ hour median against an observed 17, since that mode is itself a mixture of overl
 genuine multi-day returns. The ladder is authoritative; the log-normal is commentary, and comparing
 the two is how a badly-fitting mode announces itself.
 
+### What the memories say
+
+The trace decides *when* each memory arrives, how often it comes back and what it is worth. What it
+*says* is a separate choice, and `--vocabulary` makes it:
+
+- `synthetic` (the default) writes invented, uniformly-frequent words — `note mi0 quon tor sel dal
+  the and for…`. It looks like nothing, and that is the point: retrieval difficulty stays a
+  controlled parameter (`--memories-per-term`) rather than an accident of English word frequency.
+  **Every scored run should use it**, and the published numbers were produced with it.
+- `realistic` writes the same trace as an engineer's working notes over a plausible repository:
+
+```text
+reverted internal/cache/lease3.go in yieldSlot(): under load the dedupe path degrades into
+eviction. Same root cause as the writethrough report. Nothing else in the package depends on
+this ordering.
+```
+
+  A memory's topic terms are drawn from the same working area as the file it names, so the note and
+  its path agree about what it is about, and its event is titled `agent-00: work on cache`. A
+  held-out question then looks like `watermark checkpoint backpressure` — something a person can
+  type into a recall and reason about the answer to.
+
+**`--live` defaults to `realistic`**, because a demonstration exists to be read: the whole force of
+the `--flat-address` comparison is seeing *which* memories the significance-aware store kept, and
+two columns of invented syllables cannot carry that. An explicit `--vocabulary` still wins.
+
+Which renderer ran affects only one of the reported numbers. Retention is scored on whether the
+store still holds a needle, which never touches text; retrieval@k is scored on the store's own BM25
+ranking over these bodies, which does. That is the whole reason the default stays synthetic
+everywhere a run is scored.
+
+The realistic vocabulary is 800 single-token terms across 20 working areas, in
+[`internal/trace/vocabulary.go`](internal/trace/vocabulary.go). Both constraints in that sentence are
+load-bearing and tested: terms are single alphanumeric tokens because SQLite's FTS5 `unicode61` and
+OpenSearch's standard analyser each split on hyphens and underscores, and globally unique because a
+term carried by two areas is carried by twice the memories. Neither failure is visible by reading the
+list — the store just quietly becomes less discriminating than `--memories-per-term` claims. At the
+defaults (20,000 memories, 4 terms each, 20 areas of 40) each term lands on 100 memories, which is
+exactly what `--memories-per-term` defaults to.
+
 ## Observer — an agent that chooses what matters
 
 `cmd/observer` is a small LLM-backed agent whose only memory is Hippocampus. Each cycle it reads what

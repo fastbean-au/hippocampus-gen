@@ -82,6 +82,7 @@ func registerFlags() {
 	pflag.Int("terms-per-memory", 4, "topic terms carried by each memory")
 	pflag.Int("memories-per-term", 100, "average memories sharing any one term; lower makes a term more discriminating")
 	pflag.Int("query-terms", 3, "terms a question asks with")
+	pflag.String("vocabulary", "synthetic", "how memory text is written: 'synthetic' (invented, uniformly-frequent words, which keeps retrieval difficulty a controlled parameter and is what a scored run wants) or 'realistic' (engineering notes over a plausible repository, for a demonstration someone has to read). --live defaults to 'realistic'.")
 
 	pflag.String("significance-scale", "log", "how the latent signal maps onto significance: 'log' (geometric, the default, and what docs/consolidation.md recommends since every decay method compares significance as a ratio) or 'linear' (evenly spread, which the store's own maths then compresses at the top)")
 	pflag.Int32("min-significance", 1000, "significance floor")
@@ -246,6 +247,7 @@ func runLive(ctx context.Context, params fit.Params) error {
 		tc := traceConfig(params)
 		tc.Seed = viper.GetInt64("seed") + int64(pass)
 		tc.IDPrefix = fmt.Sprintf("p%03d-", pass)
+		tc.Vocabulary = liveVocabulary()
 
 		tr, err := trace.Generate(tc)
 		if err != nil {
@@ -269,6 +271,20 @@ func runLive(ctx context.Context, params fit.Params) error {
 			fmt.Printf("pass %d failed, continuing: %s\n", pass, err.Error())
 		}
 	}
+}
+
+// liveVocabulary picks the renderer for a demonstration run. A live writer exists to be read - the
+// whole point of the flat-significance comparison is that someone can see WHICH memories the
+// significance-aware store kept - and two columns of invented syllables cannot carry that. Nothing
+// here is scored, so the synthetic vocabulary's one advantage does not apply. An explicit
+// --vocabulary still wins.
+func liveVocabulary() trace.Vocabulary {
+	if pflag.CommandLine.Changed("vocabulary") {
+
+		return trace.Vocabulary(viper.GetString("vocabulary"))
+	}
+
+	return trace.VocabRealistic
 }
 
 // livePass replays one generated trace into both instances at once.
@@ -399,6 +415,7 @@ func traceConfig(params fit.Params) trace.Config {
 		MemoriesPerTerm:      viper.GetInt("memories-per-term"),
 		QueryTerms:           viper.GetInt("query-terms"),
 		SignificanceScale:    trace.SignificanceScale(viper.GetString("significance-scale")),
+		Vocabulary:           trace.Vocabulary(viper.GetString("vocabulary")),
 		MinSignificance:      viper.GetInt32("min-significance"),
 		MaxSignificance:      viper.GetInt32("max-significance"),
 		BodyBytes:            viper.GetInt("body-bytes"),
@@ -637,6 +654,21 @@ func describe(tr *trace.Trace, cfg replay.Config) {
 		len(tr.Retrievals), cold, 100*float64(cold)/float64(max(len(tr.Retrievals), 1)))
 	fmt.Printf("clock:    %g simulated days per wall minute, needing consolidation.unitsOfAgeInDays %.9g\n",
 		cfg.SimDaysPerWallMinute, cfg.RequiredUnitsOfAgeInDays())
+
+	vocabulary := tr.Config.Vocabulary
+
+	if vocabulary == "" {
+		vocabulary = trace.VocabSynthetic
+	}
+
+	// The existing counts above already allow for a trace that asks nothing, so this must too.
+	if len(tr.Retrievals) == 0 {
+		fmt.Printf("text:     %s vocabulary\n", vocabulary)
+
+		return
+	}
+
+	fmt.Printf("text:     %s vocabulary; a query looks like %q\n", vocabulary, tr.Retrievals[0].Query)
 }
 
 // report prints the result table, most retentive first.

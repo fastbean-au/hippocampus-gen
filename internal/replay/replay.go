@@ -339,9 +339,17 @@ func (r *Replay) ensureEvent(ctx context.Context, session int, force bool) error
 
 	in := r.trace.Sessions[session]
 
+	// A generated session carries its own name only under the realistic vocabulary; the synthetic
+	// one has nothing meaningful to call it, so the group serves.
+	name := in.Name
+
+	if name == "" {
+		name = fmt.Sprintf("%s working session", in.Group)
+	}
+
 	_, err := r.client.StoreEvent(ctx, &hippo.Event{
 		Id:           in.ID,
-		Name:         fmt.Sprintf("%s working session", in.Group),
+		Name:         name,
 		Significance: eventSignificance,
 		Group:        r.cfg.Group + in.Group,
 	})

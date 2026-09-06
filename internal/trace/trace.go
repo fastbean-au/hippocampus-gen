@@ -173,6 +173,13 @@ type Config struct {
 	// QueryTerms is how many of a memory's terms a retrieval question asks with.
 	QueryTerms int
 
+	// Vocabulary selects which renderer writes each memory's text. Empty means VocabSynthetic,
+	// which is the default everywhere a run is scored: real words carry real, uneven frequencies,
+	// and retrieval@k is ranked over exactly these bodies. VocabRealistic renders the same trace as
+	// engineering notes for a demonstration, where a person has to be able to read a memory and
+	// think of a query for it. See realistic.go.
+	Vocabulary Vocabulary
+
 	// SignificanceScale is how the [0,1] blended signal is mapped onto the significance range.
 	//
 	// It exists to test a specific claim about the store. Ordering by the decay value S/A^a is
@@ -244,6 +251,10 @@ type Session struct {
 	Group string
 	Start time.Time
 	End   time.Time
+
+	// Name titles the event this session becomes. Empty under the synthetic vocabulary, where there
+	// is nothing meaningful to call it and the replay falls back to naming it after its group.
+	Name string
 }
 
 // Retrieval is one held-out question: what the agent asked for after the window closed, and which
@@ -371,6 +382,15 @@ func (c Config) validate() error {
 	case c.QueryTerms > c.TermsPerMemory:
 
 		return fmt.Errorf("query terms (%d) cannot exceed terms per memory (%d)", c.QueryTerms, c.TermsPerMemory)
+
+	case c.Vocabulary != "" && c.Vocabulary != VocabSynthetic && c.Vocabulary != VocabRealistic:
+
+		return fmt.Errorf("vocabulary must be %q or %q, got %q", VocabSynthetic, VocabRealistic, c.Vocabulary)
+
+	case c.Vocabulary == VocabRealistic && c.TermsPerMemory > termsPerArea:
+
+		return fmt.Errorf("the realistic vocabulary carries %d terms per area, so terms per memory (%d) cannot exceed it",
+			termsPerArea, c.TermsPerMemory)
 
 	case c.MaxSignificance <= c.MinSignificance:
 
@@ -517,8 +537,15 @@ func (t *Trace) buildMemories(rng *rand.Rand, refs []reference) {
 		m.Group = fmt.Sprintf("agent-%02d", m.Agent)
 		m.ID = fmt.Sprintf("%smem-%08d", t.Config.IDPrefix, i)
 		m.Token = token(i)
-		m.Terms = t.terms(rng, i)
-		m.Body = body(m.Terms, m.Token, t.Config.BodyBytes)
+
+		if t.Config.Vocabulary == VocabRealistic {
+			m.Terms = realisticTerms(rng, i, t.Config.TermsPerMemory)
+			m.Body = realisticBody(rng, i, m.Terms, t.Config.BodyBytes)
+		} else {
+			m.Terms = t.terms(rng, i)
+			m.Body = body(m.Terms, m.Token, t.Config.BodyBytes)
+		}
+
 		m.Significance = t.significance(rng, *m, most, widest)
 	}
 }
@@ -640,13 +667,27 @@ func (t *Trace) buildSessions(refs []reference) {
 			}
 
 			id := len(t.Sessions)
+			group := fmt.Sprintf("agent-%02d", agent)
+
+			name := ""
+
+			if t.Config.Vocabulary == VocabRealistic {
+				entities := make([]int, 0, last-i)
+
+				for _, v := range indices[i:last] {
+					entities = append(entities, refs[v].entity)
+				}
+
+				name = sessionName(group, entities)
+			}
 
 			t.Sessions = append(t.Sessions, Session{
 				ID:    fmt.Sprintf("%ssession-%06d", t.Config.IDPrefix, id),
 				Agent: agent,
-				Group: fmt.Sprintf("agent-%02d", agent),
+				Group: group,
 				Start: refs[indices[i]].at,
 				End:   refs[indices[last-1]].at,
+				Name:  name,
 			})
 
 			for _, v := range indices[i:last] {
