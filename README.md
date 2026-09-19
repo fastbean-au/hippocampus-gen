@@ -1,5 +1,11 @@
 # hippocampus-gen
 
+[![CI](https://github.com/fastbean-au/hippocampus-gen/actions/workflows/build-containers.yml/badge.svg?branch=main)](https://github.com/fastbean-au/hippocampus-gen/actions/workflows/build-containers.yml)
+![Dependabot](https://img.shields.io/badge/dependabot-enabled-brightgreen)
+[![Known Vulnerabilities](https://snyk.io/test/github/fastbean-au/hippocampus-gen/badge.svg)](https://snyk.io/test/github/fastbean-au/hippocampus-gen)
+[![Go Reference](https://pkg.go.dev/badge/github.com/fastbean-au/hippocampus-gen.svg)](https://pkg.go.dev/github.com/fastbean-au/hippocampus-gen)
+![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/fastbean-au/hippocampus-gen)
+
 Test data generator for Hippocampus. These programs will create sample or test data for use with the [Hippocampus](https://github.com/fastbean-au/hippocampus) service.
 
 The module builds against the published `github.com/fastbean-au/hippocampus` contract (the version pinned in `go.mod`). Because that module is private, set `GOPRIVATE=github.com/fastbean-au/*` so `go` fetches it directly rather than through the public proxy and checksum database. Each generator takes `-s <host:port>` for the target gRPC address (default `localhost:50051`). By default they speak plain, unauthenticated gRPC; see [Authentication](#authentication) to drive a service that requires a bearer token. See the service's [Demonstrations](https://github.com/fastbean-au/hippocampus/blob/main/docs/demonstrations.md) guide for worked end-to-end examples in embedded and centralised modes.

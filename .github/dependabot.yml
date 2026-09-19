@@ -1,0 +1,43 @@
+# Dependabot configuration.
+#
+# Version updates require this file; security updates run from the repository's settings and do
+# not. Until this file was added only the latter were running here, which is why the generators'
+# grpc and contract dependencies had never been bumped by anything but a hand edit.
+#
+# THE COUPLING WORTH KNOWING is the contract. These generators build against the published
+# `github.com/fastbean-au/hippocampus` module, so a gomod bump here is how this repository learns
+# that the service's contract has moved. There is only one module and one Dockerfile, so nothing
+# needs grouping across directories the way the service's own configuration does - a single group
+# per ecosystem is the whole arrangement.
+version: 2
+
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      generators:
+        patterns:
+          - "*"
+
+  # The generator image's base images. Both float a minor tag, so these are the only notice this
+  # repository gets that the base of the published image has moved.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      base-images:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns:
+          - "*"
