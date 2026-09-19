@@ -1,16 +1,20 @@
 # syntax=docker/dockerfile:1
 
-# Which generator to build, e.g. book, logs, or random. Selects the package
-# under ./cmd/${CMD}. The data files each generator needs are baked in via
-# //go:embed, so no runtime assets are required.
-ARG GO_VERSION=1.25
+# The builder's Go version. CI overrides this from go.mod's go directive, so the two can never
+# drift; this default only serves local `docker build` and must be >= that directive, since the
+# official golang images set GOTOOLCHAIN=local and will not fetch a newer toolchain themselves.
+ARG GO_VERSION=1.27
 
 # Build on the native BUILDPLATFORM and cross-compile to TARGETOS/TARGETARCH. Because CGO is disabled
 # the cross-compile is a plain GOARCH switch, so a multi-arch build (linux/amd64 + linux/arm64) never
 # pays for QEMU emulation of the toolchain - each target is compiled natively on the amd64 runner.
 FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS build
 
+# Which generator to build, e.g. book, logs, or random. Selects the package under ./cmd/${CMD}.
+# The data files each generator needs are baked in via //go:embed, so no runtime assets are
+# required.
 ARG CMD
+
 ARG TARGETOS
 ARG TARGETARCH
 
