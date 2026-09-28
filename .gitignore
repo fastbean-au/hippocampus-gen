@@ -7,6 +7,15 @@
 *.dll
 *.so
 *.dylib
+.DS_Store
+
+# env file
+.env
+
+# Editor/IDE
+.idea/
+.vscode/
+
 
 # Test binary, built with `go test -c`
 *.test
