@@ -1,0 +1,114 @@
+name: Contract bump
+
+# Raise github.com/fastbean-au/hippocampus when the service cuts a release, and open a PR.
+#
+# THIS REPOSITORY IS THE CAUTIONARY TALE THE OTHERS CITE. Every satellite's bump workflow says, in
+# its own header, that a repository without one goes stale silently and names this one for having
+# sat eleven releases behind on v0.36.1 - while its generators compile against the contract and
+# `types`, so a stale pin means they are built against an old wire shape. It was the last repository
+# in the family tracking the contract with nothing to raise it.
+#
+# WHAT A RELEASE MEANS HERE, and why there is no `release-on-bump` counterpart. The generators have
+# no release train: `build-containers.yml` publishes every image from `main` on push, so **merging
+# this pull request is the release**. The two satellites whose version line follows the service's
+# need a tag derived from their pin to make that line honest; this one has no line to keep honest,
+# and a tag would create a release nobody consumes.
+#
+# WHICH MAKES THE VERIFICATION BELOW LOAD-BEARING rather than informational. There is no CI workflow
+# here - a merge publishes five images directly - so this job is the only thing that builds and
+# tests the new pin before it becomes the image everybody pulls. It is `continue-on-error` all the
+# same, because a red pull request is the notification that the contract moved under the generators,
+# and that is worth opening rather than swallowing.
+on:
+  repository_dispatch:
+    types: [hippocampus-release]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Service tag to require (e.g. v0.49.0)"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # Validate the tag's shape before it reaches `go get`: an unvalidated payload field is
+      # attacker-influenced input in a job that opens a pull request.
+      - name: Resolve the service tag
+        run: |
+          set -euo pipefail
+
+          tag="${{ github.event.client_payload.tag || inputs.tag }}"
+
+          if ! printf '%s' "$tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'$tag' is not a vX.Y.Z service tag"
+            exit 1
+          fi
+
+          echo "SERVICE_TAG=$tag" >> "$GITHUB_ENV"
+
+      - name: Raise the requirement
+        run: |
+          set -euo pipefail
+
+          go get "github.com/fastbean-au/hippocampus@${SERVICE_TAG}"
+          go mod tidy
+
+      - name: Check whether anything moved
+        id: diff
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "already on $SERVICE_TAG - nothing to do"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The only build the new pin gets before a merge publishes it. See the header.
+      - name: Build, vet, and test against the new contract
+        if: steps.diff.outputs.changed == 'true'
+        id: verify
+        continue-on-error: true
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
+      - name: Open the bump pull request
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          # GITHUB_TOKEN cannot open a pull request unless the repository has
+          # Settings -> Actions -> General -> "Allow GitHub Actions to create and approve pull
+          # requests" ticked, and even with it ticked a pull request it opens fires no
+          # `pull_request` event. A PAT avoids both: it is the same token the service's release
+          # workflow dispatches with, plus Pull requests: write. Falls back to GITHUB_TOKEN when the
+          # secret is absent.
+          token: ${{ secrets.BUMP_PR_TOKEN || github.token }}
+          branch: contract/${{ env.SERVICE_TAG }}
+          base: main
+          commit-message: "Require hippocampus ${{ env.SERVICE_TAG }}"
+          title: "Require hippocampus ${{ env.SERVICE_TAG }}"
+          body: |
+            Raised `github.com/fastbean-au/hippocampus` to
+            [`${{ env.SERVICE_TAG }}`](https://github.com/fastbean-au/hippocampus/releases/tag/${{ env.SERVICE_TAG }})
+            and tidied.
+
+            Build, vet and test against the new contract: **${{ steps.verify.outcome }}**.
+
+            A failure here is not noise — it means the contract or the `types` bounds moved under the
+            generators, and they need changing before this merges. There is no CI workflow in this
+            repository, so this is the only build the new pin gets: merging publishes all five
+            generator images from `main`.
+          labels: contract
