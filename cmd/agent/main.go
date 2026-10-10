@@ -195,9 +195,10 @@ func run(ctx context.Context) error {
 // runLive drives an endless workload into one or two instances, for a hosted demonstration rather
 // than a measurement. It never scores, never reads survivors back, and never needs a control.
 //
-// Each pass generates a fresh trace and replays it; the pass number becomes the trace's id prefix,
-// because ids are assigned from an index and a second trace would otherwise reuse the first's -
-// turning every write into an update and leaving the store's size flat forever.
+// Each pass generates a fresh trace and replays it; the run and the pass number become the trace's
+// id prefix, because ids are assigned from an index and a second trace would otherwise reuse the
+// first's - turning every write into an update and leaving the store's size flat forever. The pass
+// alone is not enough: the counter restarts with the process, and the store outlives it.
 //
 // With --flat-address the same memories go to a second instance with a constant significance. Both
 // stores then hold byte-for-byte identical bodies, ids, events and links, arriving at the same
@@ -238,6 +239,8 @@ func runLive(ctx context.Context, params fit.Params) error {
 			err, cfg.RequiredUnitsOfAgeInDays())
 	}
 
+	run := runID(time.Now())
+
 	for pass := 0; ; pass++ {
 		if ctx.Err() != nil {
 
@@ -246,7 +249,7 @@ func runLive(ctx context.Context, params fit.Params) error {
 
 		tc := traceConfig(params)
 		tc.Seed = viper.GetInt64("seed") + int64(pass)
-		tc.IDPrefix = fmt.Sprintf("p%03d-", pass)
+		tc.IDPrefix = passPrefix(run, pass)
 		tc.Vocabulary = liveVocabulary()
 
 		tr, err := trace.Generate(tc)
@@ -271,6 +274,21 @@ func runLive(ctx context.Context, params fit.Params) error {
 			fmt.Printf("pass %d failed, continuing: %s\n", pass, err.Error())
 		}
 	}
+}
+
+// runID names one run of the live writer by the moment it started, in base 36 to keep ids short.
+// It exists because the pass counter restarts at 0 with the process while the store keeps what the
+// previous run wrote: ids built from the pass alone collided with those until the new run's counter
+// passed the old one's, and on the demo that failed about half the passes for a day after every
+// restart. Millisecond resolution leaves no realistic way for two starts to share one, and the
+// fixed width keeps later runs sorting after earlier ones.
+func runID(started time.Time) string {
+	return fmt.Sprintf("%09s", strconv.FormatInt(started.UnixMilli(), 36))
+}
+
+// passPrefix is the id prefix for one pass of one run - see runID.
+func passPrefix(run string, pass int) string {
+	return fmt.Sprintf("r%s-p%03d-", run, pass)
 }
 
 // liveVocabulary picks the renderer for a demonstration run. A live writer exists to be read - the
@@ -307,7 +325,7 @@ func livePass(ctx context.Context, tr *trace.Trace, cfg replay.Config, primary *
 		return fmt.Errorf("primary: %w", err)
 	}
 
-	fmt.Printf("  stored %d, recalled %d, links %d\n", stats.Stored, stats.Recalled, stats.Links)
+	fmt.Printf("  stored %d, already held %d, recalled %d, links %d\n", stats.Stored, stats.Held, stats.Recalled, stats.Links)
 
 	if flat == nil {
 

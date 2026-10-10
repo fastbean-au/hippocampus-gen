@@ -91,9 +91,14 @@ type Config struct {
 // Stats is what a replay did, reported so a run that quietly achieved less than it claimed is
 // visible.
 type Stats struct {
-	Events    int
-	Stored    int
-	Rejected  int
+	Events   int
+	Stored   int
+	Rejected int
+
+	// Held counts writes the store answered AlreadyExists: it holds the memory already, usually
+	// because an earlier attempt committed and its response was lost. Each is skipped, not fatal.
+	Held int
+
 	Recalled  int
 	Links     int
 	LinksLost int
@@ -486,21 +491,33 @@ func (r *Replay) storeWave(ctx context.Context, memories []int) error {
 
 			r.markTouched(memory)
 
+			// AlreadyExists is the store holding the memory, which is what the write was for. Ending
+			// the pass over it cancelled every write in flight and cost the rest of the trace.
 			resp, err := r.storeMemory(ctx, in, m.Session)
-			if err != nil {
+			held := status.Code(err) == codes.AlreadyExists
+
+			if err != nil && !held {
 
 				return fmt.Errorf("storing memory %s: %w", m.ID, err)
 			}
 
 			mu.Lock()
 
-			r.stats.Links += len(links)
-			r.stats.LinksLost += lost
+			switch {
 
-			if resp.GetRejected() {
+			case held:
+				r.stats.Held++
+
+			case resp.GetRejected():
+				r.stats.Links += len(links)
+				r.stats.LinksLost += lost
 				r.stats.Rejected++
-			} else {
+
+			default:
+				r.stats.Links += len(links)
+				r.stats.LinksLost += lost
 				r.stats.Stored++
+
 			}
 
 			mu.Unlock()

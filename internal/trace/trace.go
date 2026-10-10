@@ -193,7 +193,8 @@ type Config struct {
 
 	// IDPrefix is prepended to every generated memory and session id. A single run leaves it empty;
 	// a long-running writer that generates trace after trace must set it per generation, or the
-	// second trace's ids collide with the first's and every write becomes an update.
+	// second trace's ids collide with the first's and every write becomes an update. It must also
+	// differ between runs of that writer, since the store outlives the process that wrote to it.
 	IDPrefix string
 
 	MinSignificance int32

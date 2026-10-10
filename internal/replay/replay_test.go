@@ -402,6 +402,10 @@ type forgetfulClient struct {
 	// been consolidated between being confirmed and being linked to.
 	dropLinkTarget bool
 
+	// alreadyHeld makes the first write commit and then answer AlreadyExists, as a retry does after
+	// a write whose response was lost: the store holds the memory, and says so.
+	alreadyHeld bool
+
 	failures int
 }
 
@@ -422,6 +426,19 @@ func (c *forgetfulClient) StoreMemory(ctx context.Context, in *hippo.Memory, opt
 		c.mu.Unlock()
 
 		return nil, status.Error(codes.NotFound, "no such memory: mem-00000042")
+	}
+
+	if c.alreadyHeld {
+		c.alreadyHeld = false
+		c.failures++
+		c.mu.Unlock()
+
+		if _, err := c.fakeClient.StoreMemory(ctx, in, opts...); err != nil {
+
+			return nil, err
+		}
+
+		return nil, status.Error(codes.AlreadyExists, "a record with that id already exists")
 	}
 
 	c.mu.Unlock()
@@ -448,6 +465,36 @@ func TestARecreatedEventLetsTheWriteThrough(t *testing.T) {
 
 	if stats.Stored != len(tr.Memories) {
 		t.Errorf("stored %d of %d memories", stats.Stored, len(tr.Memories))
+	}
+}
+
+// TestAMemoryTheStoreAlreadyHoldsIsNotFatal: AlreadyExists means the store holds the memory, which
+// is what the write was for. The demo's agent writer used to abort the whole pass on one - about
+// half its passes for a day after every restart, each abort cancelling every write in flight.
+func TestAMemoryTheStoreAlreadyHoldsIsNotFatal(t *testing.T) {
+	tr := testTrace(t, 400)
+	fake := newFake()
+	c := &forgetfulClient{fakeClient: fake, alreadyHeld: true}
+
+	stats, err := New(c, tr, fastConfig()).Run(context.Background())
+	if err != nil {
+		t.Fatalf("a memory the store already holds should be skipped, not fatal: %v", err)
+	}
+
+	if c.failures != 1 {
+		t.Fatalf("the case under test did not arise (%d failures injected)", c.failures)
+	}
+
+	if stats.Held != 1 {
+		t.Errorf("counted %d memories already held, want 1", stats.Held)
+	}
+
+	if stats.Stored != len(tr.Memories)-1 {
+		t.Errorf("stored %d of the %d memories that were not already held", stats.Stored, len(tr.Memories)-1)
+	}
+
+	if len(fake.memories) != len(tr.Memories) {
+		t.Errorf("the store holds %d of %d memories", len(fake.memories), len(tr.Memories))
 	}
 }
 
