@@ -3,7 +3,7 @@ module github.com/fastbean-au/hippocampus-gen
 go 1.27.4
 
 require (
-	github.com/fastbean-au/hippocampus v0.53.0
+	github.com/fastbean-au/hippocampus v0.53.1
 	github.com/spf13/pflag v1.1.0
 	github.com/spf13/viper v1.21.0
 	golang.org/x/sync v0.24.0
