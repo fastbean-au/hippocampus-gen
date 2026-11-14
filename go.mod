@@ -6,7 +6,7 @@ require (
 	github.com/fastbean-au/hippocampus v0.53.3
 	github.com/spf13/pflag v1.1.0
 	github.com/spf13/viper v1.21.0
-	golang.org/x/sync v0.24.0
+	golang.org/x/sync v0.25.0
 	google.golang.org/grpc v1.85.0
 )
 
